@@ -1,7 +1,9 @@
 'use client';
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { AnimatePresence, motion, useReducedMotion, type MotionStyle } from 'framer-motion';
-import { useDemo, type DemoCursor } from './demo-provider';
+import { inkPathData } from '@raval/shared';
+import { useDemo, tint, onColor, type DemoCursor } from './demo-provider';
+import { readRadii, formatRadii, radiiCss, readSpacing, type Edges, type Spacing } from '../lib/demo-read';
 
 // The demo mirrors the extension: same colours, same highlight states, same
 // motion. Values here are kept in step with apps/extension/src/content/tokens.ts
@@ -80,15 +82,20 @@ function useMove(): typeof SPRING | { duration: 0 } {
  * Selected: same shape, darker fill and a solid, heavier border. It springs
  * between targets instead of jumping.
  */
-function ElementHighlight({ box, selected = false, outline = false, z = 8900 }: {
+function ElementHighlight({ box, selected = false, outline = false, z = 8900, radius, hollow = false }: {
   box: Box;
   selected?: boolean;
   /** Text targets: the word is filled by the browser highlight, so only outline it. */
   outline?: boolean;
   z?: number;
+  /** The element's own corners, as a CSS border-radius, when it has rounded ones. */
+  radius?: string | undefined;
+  /** No fill, for when the spacing bands are drawn inside. */
+  hollow?: boolean;
 }) {
   const move = useMove();
-  const fill = outline ? 0 : selected ? 0.14 : 0.06;
+  const { color } = useDemo();
+  const fill = outline || hollow ? 0 : selected ? 0.14 : 0.06;
   const stroke = selected ? 1 : 0.75;
   return (
     <motion.div
@@ -98,11 +105,11 @@ function ElementHighlight({ box, selected = false, outline = false, z = 8900 }: 
       transition={{ ...move, opacity: { duration: 0.12, ease: 'easeOut' } }}
       style={{
         position: 'fixed', left: 0, top: 0, boxSizing: 'border-box',
-        background: `rgba(255,69,0,${fill})`,
-        border: `${selected || outline ? 1.5 : 1}px solid rgba(255,69,0,${stroke})`,
+        background: tint(color, fill),
+        border: `${selected || outline ? 1.5 : 1}px solid ${tint(color, stroke)}`,
         // The extension strokes a 2px-radius path on canvas, half the line outside it. A CSS
         // border sits fully inside, so it needs a larger radius to read as the same corner.
-        borderRadius: outline ? 4 : 3,
+        borderRadius: radius ?? (outline ? 4 : 3),
         pointerEvents: 'none', zIndex: z,
       }}
     />
@@ -135,6 +142,50 @@ function Chip({ x, y, children, centered = false, style }: {
       style={{ ...CHIP, left: x, top: y, transform: centered ? 'translate(-50%, -50%)' : undefined, ...style }}
     >
       {children}
+    </div>
+  );
+}
+
+/** The options card under the toolbar: each tool's settings, as in the extension. */
+function Card({ children }: { children: ReactNode }) {
+  const reduce = useReducedMotion();
+  return (
+    <motion.div
+      data-demo-ui="true"
+      initial={reduce ? false : { opacity: 0, y: -4, x: '-50%' }} animate={{ opacity: 1, y: 0, x: '-50%' }} transition={{ duration: 0.16, ease: 'easeOut' }}
+      style={{
+        position: 'fixed', left: '50%', top: TOOLBAR_H + 12, width: 244, boxSizing: 'border-box', padding: 10, zIndex: 9000,
+        background: UI.bg, border: `1px solid ${UI.border}`, borderRadius: 14, boxShadow: UI.shadow,
+        fontFamily: UI.font, lineHeight: 1.3, letterSpacing: 'normal', userSelect: 'none',
+      }}
+    >
+      {children}
+    </motion.div>
+  );
+}
+
+/** One on/off setting on a card. */
+function SwitchRow({ label, hint, on, onToggle }: { label: string; hint?: string; on: boolean; onToggle: () => void }) {
+  const reduce = useReducedMotion();
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '2px 2px' }}>
+      <span style={{ fontSize: 12, color: UI.textSecondary, letterSpacing: '-0.01em' }}>
+        {label}
+        {hint && <span style={{ marginLeft: 6, fontFamily: UI.mono, fontSize: 10, color: UI.textMuted }}>{hint}</span>}
+      </span>
+      <button
+        type="button" role="switch" aria-checked={on} aria-label={label} onClick={onToggle}
+        style={{
+          position: 'relative', width: 30, height: 17, padding: 0, border: 'none', borderRadius: 9, cursor: 'pointer', flexShrink: 0,
+          background: on ? UI.accent : 'rgba(0,0,0,0.12)', transition: reduce ? 'none' : 'background 0.2s ease',
+        }}
+      >
+        <span aria-hidden="true" style={{
+          position: 'absolute', top: 2, left: 2, width: 13, height: 13, borderRadius: '50%', background: '#fff',
+          boxShadow: '0 1px 2px rgba(0,0,0,0.25)', transform: `translateX(${on ? 13 : 0}px)`,
+          transition: reduce ? 'none' : `transform 0.18s ${UI.easeMove}`,
+        }} />
+      </button>
     </div>
   );
 }
@@ -370,11 +421,53 @@ function Segmented({ value, onChange }: { value: Format; onChange: (f: Format) =
   );
 }
 
+/** Fixed, not the mark colour: the three kinds of space have to stay tellable apart. */
+const PADDING_RGB = '22, 163, 74';
+const MARGIN_RGB = '217, 119, 6';
+const GAP_RGB = '124, 58, 237';
+
+function BandLabel({ x, y, value, rgb }: { x: number; y: number; value: number; rgb: string }) {
+  const text = String(Math.round(value * 100) / 100);
+  const w = text.length * 6.2 + 8;
+  return (
+    <g>
+      <rect x={Math.round(x - w / 2)} y={Math.round(y - 7)} width={w} height="14" rx="4" fill="rgba(255,255,255,0.94)" />
+      <text x={Math.round(x)} y={Math.round(y) + 3.5} textAnchor="middle" fill={`rgb(${rgb})`} fontFamily={UI.mono} fontSize="10" fontWeight="500">{text}</text>
+    </g>
+  );
+}
+
+/** Padding, margin and child gaps of the clicked element, drawn on it the way browser dev tools do. */
+function SpacingBands({ s }: { s: Spacing }) {
+  const box = (e: Edges): string => `M${e.left} ${e.top}H${e.right}V${e.bottom}H${e.left}Z`;
+  const ring = (outer: Edges, inner: Edges, values: Spacing['marginValues'], rgb: string): ReactNode => {
+    const cx = (outer.left + outer.right) / 2;
+    const cy = (outer.top + outer.bottom) / 2;
+    return (
+      <g>
+        <path d={box(outer) + box(inner)} fillRule="evenodd" fill={`rgba(${rgb}, 0.22)`} />
+        {values.top >= 1 && <BandLabel x={cx} y={(outer.top + inner.top) / 2} value={values.top} rgb={rgb} />}
+        {values.bottom >= 1 && <BandLabel x={cx} y={(outer.bottom + inner.bottom) / 2} value={values.bottom} rgb={rgb} />}
+        {values.left >= 1 && <BandLabel x={(outer.left + inner.left) / 2} y={cy} value={values.left} rgb={rgb} />}
+        {values.right >= 1 && <BandLabel x={(outer.right + inner.right) / 2} y={cy} value={values.right} rgb={rgb} />}
+      </g>
+    );
+  };
+  return (
+    <svg data-demo-ui="true" aria-hidden="true" style={{ position: 'fixed', left: 0, top: 0, width: '100vw', height: '100vh', overflow: 'visible', pointerEvents: 'none', zIndex: 8898 }}>
+      {s.gaps.map((g, i) => <rect key={i} x={g.x} y={g.y} width={g.w} height={g.h} fill={`rgba(${GAP_RGB}, 0.22)`} />)}
+      {ring(s.margin, s.border, s.marginValues, MARGIN_RGB)}
+      {ring(s.padding, s.content, s.paddingValues, PADDING_RGB)}
+      {s.gaps.map((g, i) => (g.labelled ? <BandLabel key={i} x={g.x + g.w / 2} y={g.y + g.h / 2} value={g.value} rgb={GAP_RGB} /> : null))}
+    </svg>
+  );
+}
+
 const PANEL_W = 248;
 
 interface Selection { el: Element; range: Range | null }
 
-function DetailsPanel({ sel, anchor }: { sel: Selection; anchor: DOMRect }) {
+function DetailsPanel({ sel, anchor }: { sel: Selection; anchor: Edges }) {
   const ref = useRef<HTMLDivElement>(null);
   const move = useMove();
   const [format, setFormat] = useState<Format>('hex');
@@ -464,6 +557,8 @@ function InspectOverlay({ setCursor }: { setCursor: (c: DemoCursor) => void }) {
   useViewportTick();
   const [hover, setHover] = useState<{ el: Element; range: Range | null } | null>(null);
   const [sel, setSel] = useState<Selection | null>(null);
+  /** Draw the clicked element's padding, margin and child gaps on it. */
+  const [spacing, setSpacing] = useState(false);
 
   useEffect(() => {
     function onMove(e: MouseEvent) {
@@ -491,7 +586,12 @@ function InspectOverlay({ setCursor }: { setCursor: (c: DemoCursor) => void }) {
         return { el, range };
       });
     }
-    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') setSel(null); }
+    function onKey(e: KeyboardEvent) {
+      const t = e.target as HTMLElement;
+      if (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable) return;
+      if (e.key === 'Escape') setSel(null);
+      else if (e.key.toLowerCase() === 'b' && !e.metaKey && !e.ctrlKey && !e.altKey) setSpacing((v) => !v);
+    }
     window.addEventListener('mousemove', onMove, { passive: true });
     window.addEventListener('click', onClick, true);
     window.addEventListener('keydown', onKey);
@@ -513,18 +613,40 @@ function InspectOverlay({ setCursor }: { setCursor: (c: DemoCursor) => void }) {
   const selRect = live(sel) ? rectOf(sel!) : null;
   const hoveringSelection = !!hover && !!sel && hover.el === sel.el && sameRange(hover.range, sel.range);
 
+  // Rounded elements are outlined along their real corners, and say their radius.
+  const hoverRadii = hoverRect && !hover!.range ? readRadii(hover!.el) : null;
+  const selRadii = selRect && !sel!.range ? readRadii(sel!.el) : null;
+  // Spacing belongs to what was clicked; for a clicked word that is the element holding it.
+  const bands = spacing && selRect ? readSpacing(sel!.el) : null;
+
   return (
     <>
-      {selRect && <ElementHighlight box={toBox(selRect)} selected outline={!!sel!.range} z={8899} />}
-      {hoverRect && !hoveringSelection && <ElementHighlight box={toBox(hoverRect)} outline={!!hover!.range} />}
-      {/* Elements (not words) also show their size */}
+      <Card>
+        <SwitchRow label="Show spacing" hint="B" on={spacing} onToggle={() => setSpacing((v) => !v)} />
+        <div style={{ marginTop: 6, padding: '0 2px', fontSize: 10, color: UI.textSecondary, letterSpacing: '-0.01em' }}>
+          {spacing ? 'Click an element: padding, margin and gaps' : 'Hover for size and radius · Click for details'}
+        </div>
+      </Card>
+
+      {bands && <SpacingBands s={bands} />}
+      {selRect && (
+        <ElementHighlight
+          box={toBox(selRect)} selected outline={!!sel!.range} z={8899} hollow={!!bands}
+          radius={selRadii ? radiiCss(selRadii, 3) : undefined}
+        />
+      )}
+      {hoverRect && !hoveringSelection && (
+        <ElementHighlight box={toBox(hoverRect)} outline={!!hover!.range} radius={hoverRadii ? radiiCss(hoverRadii, 3) : undefined} />
+      )}
+      {/* Elements (not words) also show their size, and their corner radius when they have one */}
       {hoverRect && !hover!.range && (
         <Chip x={hoverRect.left} y={hoverRect.top > TOOLBAR_H + 34 ? hoverRect.top - 30 : hoverRect.bottom + 8}>
-          {dims(hoverRect)}
+          {hoverRadii ? `${dims(hoverRect)} · ${formatRadii(hoverRadii)}` : dims(hoverRect)}
         </Chip>
       )}
       <AnimatePresence>
-        {sel && selRect && <DetailsPanel key="details" sel={sel} anchor={selRect} />}
+        {/* With the bands on, the panel keeps clear of the whole margin box */}
+        {sel && selRect && <DetailsPanel key="details" sel={sel} anchor={bands?.margin ?? selRect} />}
       </AnimatePresence>
     </>
   );
@@ -559,7 +681,6 @@ const LINE_S = 0.33;
 const CAP_S = 0.1;
 /** Leaving is quicker than arriving. */
 const RETRACT_S = LINE_S * 0.7;
-const STROKE = 'rgba(255,69,0,0.85)';
 const EASE_IN_OUT = [0.645, 0.045, 0.355, 1] as const;
 
 /**
@@ -570,6 +691,7 @@ const EASE_IN_OUT = [0.645, 0.045, 0.355, 1] as const;
  */
 function MeasureLine({ a, b, aId, wait }: { a: DOMRect; b: DOMRect; aId: number; wait: number }) {
   const reduce = useReducedMotion();
+  const STROKE = tint(useDemo().color, 0.85);
   // Decided once: a line that replaces two removed ones waits for them to pull back.
   const [delay] = useState(wait);
   const { x1, y1, x2, y2, gap, horizontal } = measurePair(a, b);
@@ -613,6 +735,7 @@ function MeasureLine({ a, b, aId, wait }: { a: DOMRect; b: DOMRect; aId: number;
 
 function MeasureOverlay({ setCursor }: { setCursor: (c: DemoCursor) => void }) {
   useViewportTick();
+  const { color } = useDemo();
   const [pins, setPins] = useState<{ id: number; el: Element }[]>([]);
   const [hover, setHover] = useState<Element | null>(null);
   const [announcement, setAnnouncement] = useState('');
@@ -698,7 +821,7 @@ function MeasureOverlay({ setCursor }: { setCursor: (c: DemoCursor) => void }) {
           style={{
             position: 'fixed', left: Math.max(10, rects[i]!.left), top: Math.max(TOOLBAR_H + 10, rects[i]!.top),
             width: 16, height: 16, margin: '-8px 0 0 -8px', borderRadius: '50%', boxSizing: 'border-box',
-            background: UI.accent, border: '1.5px solid #fff', color: '#fff',
+            background: color, border: '1.5px solid #fff', color: onColor(color),
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             fontFamily: UI.font, fontSize: 10, fontWeight: 600, lineHeight: 1,
             pointerEvents: 'none', zIndex: 8955,
@@ -720,18 +843,75 @@ function MeasureOverlay({ setCursor }: { setCursor: (c: DemoCursor) => void }) {
 
 // ─── 3. Guides ────────────────────────────────────────────────────────────────
 // Click to place; hover a guide to delete it with a click or move it with a drag.
+// With the pointer between two parallel guides, the distance between them is shown.
+// Placed guides stay on the page when the tool is switched off.
 
 interface Guide { id: number; axis: 'h' | 'v'; pos: number }
+interface Gap { x1: number; y1: number; x2: number; y2: number; label: string; avoidY?: number }
 
 const GUIDE_HIT = 4;
 const DRAG_THRESHOLD = 4;
 
-function GuidesOverlay({ setCursor }: { setCursor: (c: DemoCursor) => void }) {
+/** Closest guide of an axis on each side of a page position. */
+function neighbours(guides: Guide[], axis: 'h' | 'v', pos: number, skipId?: number): { before: Guide | null; after: Guide | null } {
+  let before: Guide | null = null;
+  let after: Guide | null = null;
+  for (const g of guides) {
+    if (g.axis !== axis || g.id === skipId) continue;
+    if (g.pos < pos && (!before || g.pos > before.pos)) before = g;
+    if (g.pos > pos && (!after || g.pos < after.pos)) after = g;
+  }
+  return { before, after };
+}
+
+/** Measured gaps between guides: a capped line across each, with the distance beside it. */
+function GuideGaps({ gaps }: { gaps: Gap[] }) {
+  const { color } = useDemo();
+  const vw = window.innerWidth, vh = window.innerHeight;
+  const clamp = (v: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, v));
+  const CAP = 4;
+  return (
+    <svg data-demo-ui="true" aria-hidden="true" style={{ position: 'fixed', left: 0, top: 0, width: '100vw', height: '100vh', overflow: 'visible', pointerEvents: 'none', zIndex: 8950 }}>
+      {gaps.map((g, i) => {
+        const horizontal = Math.abs(g.y2 - g.y1) < 2;
+        const w = g.label.length * 6.7 + 12;
+        const h = 18;
+        // Centred on the part of the gap that is on screen; under a horizontal gap, left of a vertical one.
+        let cx: number, cy: number;
+        if (horizontal) {
+          cx = (clamp(Math.min(g.x1, g.x2), 0, vw) + clamp(Math.max(g.x1, g.x2), 0, vw)) / 2;
+          cy = g.y1 + 8 + h / 2 > vh - 4 ? g.y1 - 8 - h / 2 : g.y1 + 8 + h / 2;
+        } else {
+          cy = (clamp(Math.min(g.y1, g.y2), TOOLBAR_H, vh) + clamp(Math.max(g.y1, g.y2), TOOLBAR_H, vh)) / 2;
+          // Between four guides both gaps meet at the pointer; step this label above the crossing.
+          if (g.avoidY !== undefined && cy > g.avoidY - h - 6 && cy < g.avoidY + 34) cy = g.avoidY - h - 6;
+          cx = g.x1 - 8 - w / 2 < 4 ? g.x1 + 8 + w / 2 : g.x1 - 8 - w / 2;
+        }
+        const left = Math.round(clamp(cx - w / 2, 4, vw - w - 4));
+        const top = Math.round(clamp(cy - h / 2, TOOLBAR_H + 4, vh - h - 4));
+        const caps = horizontal
+          ? `M${g.x1} ${g.y1 - CAP}v${CAP * 2}M${g.x2} ${g.y2 - CAP}v${CAP * 2}`
+          : `M${g.x1 - CAP} ${g.y1}h${CAP * 2}M${g.x2 - CAP} ${g.y2}h${CAP * 2}`;
+        return (
+          <g key={i}>
+            <path d={`M${g.x1} ${g.y1}L${g.x2} ${g.y2}${caps}`} stroke={tint(color, 0.8)} strokeWidth="1.5" strokeLinecap="round" fill="none" />
+            <rect x={left} y={top} width={w} height={h} rx="5" fill={color} />
+            <text x={left + w / 2} y={top + h / 2 + 4} textAnchor="middle" fill={onColor(color)} fontFamily={UI.mono} fontSize="11" fontWeight="500">{g.label}</text>
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+function GuidesOverlay({ active, setCursor }: { active: boolean; setCursor: (c: DemoCursor) => void }) {
   useViewportTick();
+  const { color } = useDemo();
   const [mouse, setMouse] = useState({ x: -100, y: -100 });
   const [guides, setGuides] = useState<Guide[]>([]);
   const [hoveredId, setHoveredId] = useState<number | null>(null);
   const [moving, setMoving] = useState(false);
+  const [showGaps, setShowGaps] = useState(true);
   const nextId = useRef(0);
   const guidesRef = useRef<Guide[]>([]);
   guidesRef.current = guides;
@@ -742,6 +922,7 @@ function GuidesOverlay({ setCursor }: { setCursor: (c: DemoCursor) => void }) {
   const unarmed = useRef(new Set<number>());
 
   useEffect(() => {
+    if (!active) return;
     // Guides are stored in page coordinates so they scroll with the content.
     const view = (g: Guide): number => (g.axis === 'h' ? g.pos - window.scrollY : g.pos - window.scrollX);
     const near = (g: Guide, x: number, y: number): boolean => Math.abs((g.axis === 'h' ? y : x) - view(g)) <= GUIDE_HIT;
@@ -819,21 +1000,59 @@ function GuidesOverlay({ setCursor }: { setCursor: (c: DemoCursor) => void }) {
       window.removeEventListener('mousedown', onDown, true);
       window.removeEventListener('mouseup', onUp);
       window.removeEventListener('click', onClick, true);
+      // The tool is down: nothing is hovered or mid-drag any more. The guides themselves stay.
+      press.current = null;
+      setHoveredId(null);
+      setMoving(false);
+      setMouse({ x: -100, y: -100 });
       setCursor('crosshair');
     };
-  }, [setCursor]);
+  }, [active, setCursor]);
 
   const line = (axis: 'h' | 'v', at: number, opacity: number): CSSProperties => (axis === 'h'
-    ? { position: 'fixed', left: 0, right: 0, top: at, height: 1, transform: 'translateY(-0.5px)', background: UI.accent, opacity, pointerEvents: 'none', zIndex: 8800 }
-    : { position: 'fixed', top: TOOLBAR_H, bottom: 0, left: at, width: 1, transform: 'translateX(-0.5px)', background: UI.accent, opacity, pointerEvents: 'none', zIndex: 8800 });
+    ? { position: 'fixed', left: 0, right: 0, top: at, height: 1, transform: 'translateY(-0.5px)', background: color, opacity, pointerEvents: 'none', zIndex: 8800 }
+    : { position: 'fixed', top: TOOLBAR_H, bottom: 0, left: at, width: 1, transform: 'translateX(-0.5px)', background: color, opacity, pointerEvents: 'none', zIndex: 8800 });
 
   const overGuide = hoveredId !== null || moving;
   const dragged = moving ? guides.find((g) => g.id === press.current?.id) : undefined;
+  const onPage = active && mouse.y > TOOLBAR_H;
+
+  // On a guide: its distance to the neighbour on each side. Otherwise: the gap the pointer is in.
+  const gaps: Gap[] = [];
+  if (onPage && showGaps) {
+    const sx = window.scrollX, sy = window.scrollY;
+    const gap = (axis: 'h' | 'v', from: number, to: number): Gap => {
+      const label = `${Math.round(Math.abs(to - from))}px`;
+      return axis === 'h'
+        ? { x1: mouse.x, y1: from - sy, x2: mouse.x, y2: to - sy, label, avoidY: mouse.y }
+        : { x1: from - sx, y1: mouse.y, x2: to - sx, y2: mouse.y, label };
+    };
+    const anchor = dragged ?? guides.find((g) => g.id === hoveredId);
+    if (anchor) {
+      const { before, after } = neighbours(guides, anchor.axis, anchor.pos, anchor.id);
+      if (before) gaps.push(gap(anchor.axis, before.pos, anchor.pos));
+      if (after) gaps.push(gap(anchor.axis, anchor.pos, after.pos));
+    } else {
+      for (const axis of ['h', 'v'] as const) {
+        const { before, after } = neighbours(guides, axis, axis === 'h' ? mouse.y + sy : mouse.x + sx);
+        if (before && after) gaps.push(gap(axis, before.pos, after.pos));
+      }
+    }
+  }
 
   return (
     <>
+      {active && (
+        <Card>
+          <SwitchRow label="Measure between guides" on={showGaps} onToggle={() => setShowGaps((v) => !v)} />
+          <div style={{ marginTop: 6, padding: '0 2px', fontSize: 10, color: UI.textSecondary, letterSpacing: '-0.01em' }}>
+            Click to place · Click a guide to delete · Drag to move
+          </div>
+        </Card>
+      )}
+
       {/* Placement preview — hidden over a guide, where a click deletes instead of adding */}
-      {!overGuide && mouse.y > TOOLBAR_H && (
+      {onPage && !overGuide && (
         <>
           <div data-demo-ui="true" style={line('v', mouse.x, 0.4)} />
           <div data-demo-ui="true" style={line('h', mouse.y, 0.4)} />
@@ -843,23 +1062,25 @@ function GuidesOverlay({ setCursor }: { setCursor: (c: DemoCursor) => void }) {
       <AnimatePresence>
         {guides.map((g) => {
           const at = g.axis === 'h' ? g.pos - window.scrollY : g.pos - window.scrollX;
-          const active = g.id === hoveredId || g.id === dragged?.id;
+          const lit = g.id === hoveredId || g.id === dragged?.id;
           return (
             <motion.div
               key={g.id} data-demo-ui="true"
               exit={{ opacity: 0 }} transition={{ duration: 0.16 }}
-              style={line(g.axis, at, active ? 0.8 : 0.5) as MotionStyle}
+              style={line(g.axis, at, lit ? 0.8 : 0.5) as MotionStyle}
             />
           );
         })}
       </AnimatePresence>
 
-      {mouse.y > TOOLBAR_H && (
+      {gaps.length > 0 && <GuideGaps gaps={gaps} />}
+
+      {onPage && (
         <Chip x={mouse.x + 10} y={mouse.y - 26}>
           {dragged ? `${Math.round(dragged.pos)}px` : `${Math.round(mouse.x)}, ${Math.round(mouse.y)}`}
         </Chip>
       )}
-      {hoveredId !== null && !moving && (
+      {active && hoveredId !== null && !moving && (
         <Chip x={mouse.x + 16} y={mouse.y + 16} style={{ fontFamily: UI.font, color: UI.textSecondary }}>
           Click to delete · Drag to move
         </Chip>
@@ -870,34 +1091,46 @@ function GuidesOverlay({ setCursor }: { setCursor: (c: DemoCursor) => void }) {
 
 // ─── 4. Annotate ──────────────────────────────────────────────────────────────
 // The extension's Annotate mode: a size callout, notes, arrows and a pen on one
-// options card. Arrows can be reshaped, notes moved and deleted, anything
-// removed with a right-click, and every change undone. Marks are stored in
-// page coordinates so they scroll with the content.
+// options card. Arrows can be reshaped and end in a head, a bar, a dot or
+// nothing; notes come in four handwriting faces and can be moved, turned and
+// deleted; the pen lays down ink that thins with speed. Anything is removed with
+// a right-click and every change undone. Marks are stored in page coordinates so
+// they scroll with the content, and stay on the page when the tool is switched off.
 
 type AnnoTool = 'size' | 'note' | 'arrow' | 'pen';
 const ANNO_TOOLS: { id: AnnoTool; label: string }[] = [
   { id: 'size', label: 'Callout' }, { id: 'note', label: 'Note' }, { id: 'arrow', label: 'Arrow' }, { id: 'pen', label: 'Pen' },
 ];
 const ANNO_KEYS: Record<string, AnnoTool> = { m: 'size', n: 'note', a: 'arrow', p: 'pen' };
-const ANNO_COLORS: { hex: string; label: string }[] = [
-  { hex: '#FF4500', label: 'Accent' }, { hex: '#FF2D85', label: 'Pink' }, { hex: '#2563EB', label: 'Blue' }, { hex: '#16A34A', label: 'Green' },
-  { hex: '#7C3AED', label: 'Purple' }, { hex: '#D97706', label: 'Amber' }, { hex: '#111111', label: 'Black' }, { hex: '#FFFFFF', label: 'White' },
-];
 const NOTE_SIZES: { id: string; label: string }[] = [{ id: '14', label: 'S' }, { id: '18', label: 'M' }, { id: '24', label: 'L' }, { id: '32', label: 'XL' }];
-const NOTE_FONT = `'Segoe Print', 'Bradley Hand', 'Comic Sans MS', 'Apple Chancery', cursive`;
+/** Handwriting faces: stacks of fonts that come with macOS or Windows, nothing shipped. */
+const NOTE_FONTS: { id: string; label: string; stack: string }[] = [
+  { id: 'hand', label: 'Hand', stack: `'Segoe Print', 'Bradley Hand', 'Comic Sans MS', 'Apple Chancery', cursive` },
+  { id: 'marker', label: 'Marker', stack: `'Marker Felt', 'Ink Free', 'Comic Sans MS', cursive` },
+  { id: 'neat', label: 'Neat', stack: `'Noteworthy', 'Chalkboard SE', 'MV Boli', 'Comic Sans MS', cursive` },
+  { id: 'script', label: 'Script', stack: `'Snell Roundhand', 'Segoe Script', 'Brush Script MT', cursive` },
+];
+const fontStack = (id: string): string => (NOTE_FONTS.find((f) => f.id === id) ?? NOTE_FONTS[0]!).stack;
+const PEN_SIZES: { id: string; label: string }[] = [{ id: '3', label: 'S' }, { id: '5', label: 'M' }, { id: '8', label: 'L' }, { id: '13', label: 'XL' }];
+type EndKind = 'none' | 'arrow' | 'bar' | 'dot';
+const ARROW_ENDS: { id: EndKind; label: string }[] = [
+  { id: 'none', label: 'None' }, { id: 'arrow', label: 'Arrow' }, { id: 'bar', label: 'Bar' }, { id: 'dot', label: 'Dot' },
+];
+/** A fresh note leans a little, like handwriting. */
+const DEFAULT_NOTE_ANGLE = -1.5;
 const NOTE_STYLE: CSSProperties = {
-  fontFamily: NOTE_FONT, fontWeight: 600, lineHeight: 1.25, letterSpacing: 'normal',
-  textShadow: '0 1px 0 rgba(255,255,255,0.85)', transform: 'rotate(-1.5deg)', transformOrigin: '0 0',
+  fontWeight: 600, lineHeight: 1.25, letterSpacing: 'normal',
+  textShadow: '0 1px 0 rgba(255,255,255,0.85)', transformOrigin: '0 0',
 };
 const ANNO_HINT: Record<AnnoTool, string> = {
   size: 'Click an element to mark its width and height',
-  note: 'Click to write · Drag a note to move it',
+  note: 'Click to write · Drag to move · Handle turns it',
   arrow: 'Drag to draw · Drag a handle to reshape',
-  pen: 'Drag to draw freehand',
+  pen: 'Drag to draw · Shift for a straight line',
 };
 
 /** The undo shortcut as this visitor would press it. Only read in the browser: the card renders after a click. */
-const UNDO_KEYS = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘\u00A0Z' : 'Ctrl\u00A0+\u00A0Z';
+const UNDO_KEYS = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘ Z' : 'Ctrl + Z';
 
 const HANDLE_HIT = 9;
 const HIT_SLOP = 8;
@@ -905,13 +1138,18 @@ const HIT_SLOP = 8;
 const STRAIGHTEN_WITHIN = 6;
 const ANGLE_STEP = Math.PI / 12;
 const NOTE_DELETE_R = 8;
+const NOTE_PAD = 4;
+const NOTE_ROTATE_R = 5;
+/** How far above the note's top edge the rotate handle sits. */
+const NOTE_ROTATE_OFFSET = 14;
 
 interface Pt { x: number; y: number }
-type ArrowMark = { id: number; color: string; kind: 'arrow'; from: Pt; to: Pt; bend: Pt | null };
-type NoteMark = { id: number; color: string; kind: 'note'; at: Pt; text: string; size: number };
+type ArrowMark = { id: number; color: string; kind: 'arrow'; from: Pt; to: Pt; bend: Pt | null; start: EndKind; end: EndKind };
+type NoteMark = { id: number; color: string; kind: 'note'; at: Pt; text: string; size: number; font: string; angle: number };
+type PenMark = { id: number; color: string; kind: 'pen'; points: Pt[]; size: number };
 type Mark =
   | { id: number; color: string; kind: 'size'; box: Box }
-  | { id: number; color: string; kind: 'pen'; points: Pt[] }
+  | PenMark
   | ArrowMark
   | NoteMark;
 type ArrowPart = 'start' | 'end' | 'bend' | 'body';
@@ -933,6 +1171,8 @@ function distToSegment(p: Pt, a: Pt, b: Pt): number {
 }
 
 function distToPath(p: Pt, points: Pt[]): number {
+  // A dot is a path of one point.
+  if (points.length === 1) return Math.hypot(p.x - points[0]!.x, p.y - points[0]!.y);
   let best = Infinity;
   for (let i = 1; i < points.length; i++) best = Math.min(best, distToSegment(p, points[i - 1]!, points[i]!));
   return best;
@@ -966,7 +1206,51 @@ function lockAngle(from: Pt, to: Pt): Pt {
 
 const shift = (p: Pt, dx: number, dy: number): Pt => ({ x: p.x + dx, y: p.y + dy });
 
-function MarkShape({ mark, handles = false }: { mark: Exclude<Mark, NoteMark>; handles?: boolean }) {
+/** A note's box before rotation and the angle (radians) it is turned by about its top-left corner. */
+interface NoteBox { x: number; y: number; w: number; h: number; angle: number }
+
+/** A point in the note's own unrotated space, origin at its top-left corner. */
+function toNoteSpace(b: NoteBox, x: number, y: number): Pt {
+  const dx = x - b.x, dy = y - b.y;
+  const cos = Math.cos(b.angle), sin = Math.sin(b.angle);
+  return { x: dx * cos + dy * sin, y: dy * cos - dx * sin };
+}
+
+function fromNoteSpace(b: NoteBox, x: number, y: number): Pt {
+  const cos = Math.cos(b.angle), sin = Math.sin(b.angle);
+  return { x: b.x + x * cos - y * sin, y: b.y + x * sin + y * cos };
+}
+
+/** Centre of the delete button: just outside the note's top-right corner, kept on screen. */
+function noteDeleteCentre(b: NoteBox): Pt {
+  const c = fromNoteSpace(b, b.w + 6, -2);
+  return { x: Math.min(c.x, window.innerWidth - NOTE_DELETE_R - 2), y: Math.max(c.y, TOOLBAR_H + NOTE_DELETE_R + 2) };
+}
+
+/** Finished strokes never change, so each outline is worked out once. */
+const inkCache = new WeakMap<Pt[], string>();
+function inkOf(mark: PenMark): string {
+  let d = inkCache.get(mark.points);
+  if (d === undefined) {
+    d = inkPathData(mark.points, mark.size);
+    inkCache.set(mark.points, d);
+  }
+  return d;
+}
+
+/** One end of an arrow at `tip`, facing away from `from`, as path data. Dots are drawn separately. */
+function arrowEnd(kind: EndKind, tip: Pt, from: Pt): string {
+  if (kind === 'none' || kind === 'dot') return '';
+  const a = Math.atan2(tip.y - from.y, tip.x - from.x);
+  if (kind === 'bar') {
+    const nx = -Math.sin(a) * 6, ny = Math.cos(a) * 6;
+    return `M${tip.x - nx} ${tip.y - ny}L${tip.x + nx} ${tip.y + ny}`;
+  }
+  const wing = (spread: number): string => `${tip.x - 12 * Math.cos(a + spread)} ${tip.y - 12 * Math.sin(a + spread)}`;
+  return `M${wing(-0.5)}L${tip.x} ${tip.y}L${wing(0.5)}`;
+}
+
+function MarkShape({ mark, handles = false, drafting = false }: { mark: Exclude<Mark, NoteMark>; handles?: boolean; drafting?: boolean }) {
   const c = mark.color;
   // White marks need an edge to show on a light page.
   const edge = c === '#FFFFFF' ? { filter: 'drop-shadow(0 0 0.75px rgba(0,0,0,0.55))' } : undefined;
@@ -984,17 +1268,19 @@ function MarkShape({ mark, handles = false }: { mark: Exclude<Mark, NoteMark>; h
     );
   }
   if (mark.kind === 'pen') {
-    return <polyline points={mark.points.map((p) => `${p.x},${p.y}`).join(' ')} stroke={c} strokeWidth="2.25" fill="none" strokeLinecap="round" strokeLinejoin="round" style={edge} />;
+    // Ink is a filled outline, not a stroked line; a stroke still under the pen has no tapered end yet.
+    return <path d={drafting ? inkPathData(mark.points, mark.size, false) : inkOf(mark)} fill={c} stroke="none" style={edge} />;
   }
-  const { from, to, bend } = mark;
+  const { from, to, bend, start, end } = mark;
   const ctrl = controlPoint(from, to, bend);
-  // The head opens back along the direction the shaft arrives from, straight or curved.
-  const back = Math.atan2((bend ? ctrl.y : from.y) - to.y, (bend ? ctrl.x : from.x) - to.x);
-  const wing = (spread: number): string => `${to.x + 12 * Math.cos(back + spread)} ${to.y + 12 * Math.sin(back + spread)}`;
+  // Each end faces the direction the shaft arrives from, straight or curved.
+  const ends = arrowEnd(end, to, bend ? ctrl : from) + arrowEnd(start, from, bend ? ctrl : to);
   const mid = bend ?? chordMid(from, to);
   return (
     <g stroke={c} strokeWidth="2.25" fill="none" strokeLinecap="round" strokeLinejoin="round" style={edge}>
-      <path d={`M${from.x} ${from.y}Q${ctrl.x} ${ctrl.y} ${to.x} ${to.y}M${wing(-0.5)}L${to.x} ${to.y}L${wing(0.5)}`} />
+      <path d={`M${from.x} ${from.y}Q${ctrl.x} ${ctrl.y} ${to.x} ${to.y}${ends}`} />
+      {end === 'dot' && <circle cx={to.x} cy={to.y} r="3.5" fill={c} stroke="none" />}
+      {start === 'dot' && <circle cx={from.x} cy={from.y} r="3.5" fill={c} stroke="none" />}
       {handles && (
         <g strokeWidth="1.5">
           <circle cx={from.x} cy={from.y} r="4.5" fill="#fff" />
@@ -1009,7 +1295,7 @@ function MarkShape({ mark, handles = false }: { mark: Exclude<Mark, NoteMark>; h
 
 /** A row of tabs with the pill that slides to the active one. */
 function Tabs<T extends string>({ label, items, value, onChange }: {
-  label: string; items: { id: T; label: string }[]; value: T; onChange: (id: T) => void;
+  label: string; items: { id: T; label: string; style?: CSSProperties }[]; value: T; onChange: (id: T) => void;
 }) {
   const reduce = useReducedMotion();
   const n = items.length;
@@ -1027,6 +1313,7 @@ function Tabs<T extends string>({ label, items, value, onChange }: {
             position: 'relative', zIndex: 1, height: 24, padding: 0, border: 'none', borderRadius: 5, background: 'transparent', cursor: 'pointer',
             fontFamily: 'inherit', fontSize: 10, fontWeight: 500, letterSpacing: '-0.01em',
             color: item.id === value ? UI.textPrimary : UI.textSecondary, transition: reduce ? 'none' : `color 0.22s ${UI.easeMove}`,
+            ...item.style,
           }}
         >
           {item.label}
@@ -1036,16 +1323,30 @@ function Tabs<T extends string>({ label, items, value, onChange }: {
   );
 }
 
+/** A group of card rows that is only there for the tool it belongs to. */
+function ToolRows({ show, children }: { show: boolean; children: ReactNode }) {
+  const reduce = useReducedMotion();
+  return (
+    <div style={{ display: 'grid', gridTemplateRows: show ? '1fr' : '0fr', transition: reduce ? 'none' : `grid-template-rows 0.2s ${UI.easeOut}` }}>
+      <div style={{ overflow: 'hidden', minHeight: 0 }}>{children}</div>
+    </div>
+  );
+}
+
 type AnnoDrag =
   | { kind: 'arrow'; id: number; part: ArrowPart; last: Pt; moved: boolean; before: Mark[] }
-  | { kind: 'note'; id: number; last: Pt; moved: boolean; before: Mark[] };
+  | { kind: 'note'; id: number; last: Pt; moved: boolean; before: Mark[] }
+  /** `centre` is in page space; `from` is the pointer's direction from it when the drag began. */
+  | { kind: 'rotate'; id: number; centre: Pt; from: number; startAngle: number; half: Pt; moved: boolean; before: Mark[] };
 
-function AnnotateOverlay({ setCursor }: { setCursor: (c: DemoCursor) => void }) {
+function AnnotateOverlay({ active, setCursor }: { active: boolean; setCursor: (c: DemoCursor) => void }) {
   useViewportTick();
-  const reduce = useReducedMotion();
+  const { color } = useDemo();
   const [tool, setTool] = useState<AnnoTool>('size');
-  const [color, setColor] = useState(ANNO_COLORS[0]!.hex);
   const [noteSize, setNoteSize] = useState(18);
+  const [noteFont, setNoteFont] = useState(NOTE_FONTS[0]!.id);
+  const [penSize, setPenSize] = useState(5);
+  const [ends, setEnds] = useState<{ start: EndKind; end: EndKind }>({ start: 'none', end: 'arrow' });
   const [marks, setMarks] = useState<Mark[]>([]);
   const [hover, setHover] = useState<Box | null>(null);
   const [draft, setDraft] = useState<Exclude<Mark, NoteMark> | null>(null);
@@ -1053,6 +1354,7 @@ function AnnotateOverlay({ setCursor }: { setCursor: (c: DemoCursor) => void }) 
   /** The arrow or note under the pointer, which is the one a press would grab. */
   const [activeId, setActiveId] = useState<number | null>(null);
   const [overDelete, setOverDelete] = useState(false);
+  const [overRotate, setOverRotate] = useState(false);
   const nextId = useRef(0);
   const history = useRef<Mark[][]>([]);
   const drag = useRef<AnnoDrag | null>(null);
@@ -1060,17 +1362,27 @@ function AnnotateOverlay({ setCursor }: { setCursor: (c: DemoCursor) => void }) 
   const swallowClick = useRef(false);
   const noteEls = useRef(new Map<number, HTMLDivElement>());
   // The listeners are attached once and read the latest values from here.
-  const live = useRef({ tool, color, noteSize, marks, draft, editing, activeId });
-  live.current = { tool, color, noteSize, marks, draft, editing, activeId };
+  const live = useRef({ tool, color, noteSize, penSize, ends, marks, draft, editing, activeId });
+  live.current = { tool, color, noteSize, penSize, ends, marks, draft, editing, activeId };
+
+  /** Where a note sits on screen right now, unrotated, and how far it is turned. */
+  const noteBox = (m: NoteMark): NoteBox | null => {
+    const el = noteEls.current.get(m.id);
+    if (!el) return null;
+    return { x: m.at.x - window.scrollX, y: m.at.y - window.scrollY, w: el.offsetWidth, h: el.offsetHeight, angle: (m.angle * Math.PI) / 180 };
+  };
 
   useEffect(() => {
+    if (!active) return;
     setCursor(tool === 'note' ? 'ibeam' : tool === 'pen' ? 'pen' : 'crosshair');
     setHover(null);
     setActiveId(null);
     setOverDelete(false);
-  }, [tool, setCursor]);
+    setOverRotate(false);
+  }, [active, tool, setCursor]);
 
   useEffect(() => {
+    if (!active) return;
     const page = (e: MouseEvent): Pt => ({ x: e.clientX + window.scrollX, y: e.clientY + window.scrollY });
     const onPage = (e: MouseEvent): boolean => !isOurUI(e.target as Element) && e.clientY >= TOOLBAR_H;
     /** Every change goes through here so it can be undone. */
@@ -1081,15 +1393,15 @@ function AnnotateOverlay({ setCursor }: { setCursor: (c: DemoCursor) => void }) 
     const add = (mark: Mark): void => change([...live.current.marks, mark]);
     const baseCursor = (): DemoCursor => (live.current.tool === 'note' ? 'ibeam' : live.current.tool === 'pen' ? 'pen' : 'crosshair');
 
-    const noteRect = (id: number): DOMRect | null => noteEls.current.get(id)?.getBoundingClientRect() ?? null;
-    const deleteCentre = (r: DOMRect): Pt => ({ x: Math.min(r.right + 6, window.innerWidth - NOTE_DELETE_R - 2), y: Math.max(r.top - 2, TOOLBAR_H + NOTE_DELETE_R + 2) });
     const noteAt = (x: number, y: number): NoteMark | null => {
       const all = live.current.marks;
       for (let i = all.length - 1; i >= 0; i--) {
         const m = all[i]!;
         if (m.kind !== 'note') continue;
-        const r = noteRect(m.id);
-        if (r && x >= r.left - 4 && x <= r.right + 4 && y >= r.top - 4 && y <= r.bottom + 4) return m;
+        const b = noteBox(m);
+        if (!b) continue;
+        const p = toNoteSpace(b, x, y);
+        if (p.x >= -NOTE_PAD && p.x <= b.w + NOTE_PAD && p.y >= -NOTE_PAD && p.y <= b.h + NOTE_PAD) return m;
       }
       return null;
     };
@@ -1117,17 +1429,37 @@ function AnnotateOverlay({ setCursor }: { setCursor: (c: DemoCursor) => void }) 
       }
       return null;
     };
-    const onNoteDelete = (e: MouseEvent): boolean => {
-      const id = live.current.activeId;
-      const r = id === null ? null : noteRect(id);
-      if (!r) return false;
-      const c = deleteCentre(r);
-      return Math.hypot(e.clientX - c.x, e.clientY - c.y) <= NOTE_DELETE_R + 3;
+    const activeNote = (): { mark: NoteMark; box: NoteBox } | null => {
+      const mark = live.current.marks.find((m): m is NoteMark => m.kind === 'note' && m.id === live.current.activeId);
+      const box = mark ? noteBox(mark) : null;
+      return mark && box ? { mark, box } : null;
+    };
+    /** Is the pointer on the active note's delete button or rotate handle? Both sit outside its box. */
+    const noteControl = (e: MouseEvent): 'delete' | 'rotate' | null => {
+      const a = activeNote();
+      if (!a) return null;
+      const d = noteDeleteCentre(a.box);
+      if (Math.hypot(e.clientX - d.x, e.clientY - d.y) <= NOTE_DELETE_R + 3) return 'delete';
+      const r = fromNoteSpace(a.box, a.box.w / 2, -NOTE_ROTATE_OFFSET);
+      // Reaches down to the outline, so the note stays active on the way to the handle.
+      return Math.hypot(e.clientX - r.x, e.clientY - r.y) <= NOTE_ROTATE_OFFSET - NOTE_PAD + 1 ? 'rotate' : null;
     };
 
     function onMove(e: MouseEvent) {
       const p = page(e);
       const d = drag.current;
+      if (d?.kind === 'rotate') {
+        // Turn the note about its centre to follow the pointer; Shift locks to 15° steps.
+        let deg = d.startAngle + ((Math.atan2(p.y - d.centre.y, p.x - d.centre.x) - d.from) * 180) / Math.PI;
+        if (e.shiftKey) deg = Math.round(deg / 15) * 15;
+        deg = Math.round((((((deg + 180) % 360) + 360) % 360) - 180) * 10) / 10;
+        const rad = (deg * Math.PI) / 180;
+        // The note turns about its top-left corner, so that corner moves to keep the centre still.
+        const at = { x: d.centre.x - (d.half.x * Math.cos(rad) - d.half.y * Math.sin(rad)), y: d.centre.y - (d.half.x * Math.sin(rad) + d.half.y * Math.cos(rad)) };
+        d.moved = true;
+        setMarks((prev) => prev.map((m) => (m.id === d.id && m.kind === 'note' ? { ...m, angle: deg, at } : m)));
+        return;
+      }
       if (d) {
         const dx = p.x - d.last.x;
         const dy = p.y - d.last.y;
@@ -1152,7 +1484,8 @@ function AnnotateOverlay({ setCursor }: { setCursor: (c: DemoCursor) => void }) 
 
       const dr = live.current.draft;
       if (dr?.kind === 'arrow') { setDraft({ ...dr, to: e.shiftKey ? lockAngle(dr.from, p) : p }); return; }
-      if (dr?.kind === 'pen') { setDraft({ ...dr, points: [...dr.points, p] }); return; }
+      // Shift rules a straight line from where the stroke began.
+      if (dr?.kind === 'pen') { setDraft({ ...dr, points: e.shiftKey ? [dr.points[0]!, p] : [...dr.points, p] }); return; }
 
       const t = live.current.tool;
       const on = onPage(e);
@@ -1164,12 +1497,13 @@ function AnnotateOverlay({ setCursor }: { setCursor: (c: DemoCursor) => void }) 
         setActiveId(hit?.mark.id ?? null);
         setCursor(hit ? 'grab' : 'crosshair');
       } else if (t === 'note') {
-        // The delete button sits outside the note's box, so check it first to keep the note active.
-        const del = on && onNoteDelete(e);
-        const id = del ? live.current.activeId : on ? noteAt(e.clientX, e.clientY)?.id ?? null : null;
+        // The controls sit outside the note's box, so check them first to keep the note active.
+        const ctl = on ? noteControl(e) : null;
+        const id = ctl ? live.current.activeId : on ? noteAt(e.clientX, e.clientY)?.id ?? null : null;
         setActiveId(id);
-        setOverDelete(del);
-        setCursor(del ? 'delete' : id !== null ? 'grab' : 'ibeam');
+        setOverDelete(ctl === 'delete');
+        setOverRotate(ctl === 'rotate');
+        setCursor(ctl === 'delete' ? 'delete' : id !== null ? 'grab' : 'ibeam');
       }
     }
 
@@ -1180,11 +1514,24 @@ function AnnotateOverlay({ setCursor }: { setCursor: (c: DemoCursor) => void }) 
       const p = page(e);
 
       if (t === 'note') {
-        if (onNoteDelete(e)) {
+        const ctl = noteControl(e);
+        if (ctl === 'delete') {
           change(all.filter((m) => m.id !== live.current.activeId));
           setActiveId(null);
           setOverDelete(false);
           setCursor('ibeam');
+          swallowClick.current = true;
+          e.preventDefault();
+          return;
+        }
+        const a = ctl === 'rotate' ? activeNote() : null;
+        if (a) {
+          const c0 = fromNoteSpace(a.box, a.box.w / 2, a.box.h / 2);
+          const centre = { x: c0.x + window.scrollX, y: c0.y + window.scrollY };
+          drag.current = {
+            kind: 'rotate', id: a.mark.id, centre, from: Math.atan2(p.y - centre.y, p.x - centre.x), startAngle: a.mark.angle,
+            half: { x: a.box.w / 2, y: a.box.h / 2 }, moved: false, before: all,
+          };
           swallowClick.current = true;
           e.preventDefault();
           return;
@@ -1206,8 +1553,8 @@ function AnnotateOverlay({ setCursor }: { setCursor: (c: DemoCursor) => void }) 
         return;
       }
       setDraft(t === 'arrow'
-        ? { id: nextId.current++, color: c, kind: 'arrow', from: p, to: p, bend: null }
-        : { id: nextId.current++, color: c, kind: 'pen', points: [p] });
+        ? { id: nextId.current++, color: c, kind: 'arrow', from: p, to: p, bend: null, ...live.current.ends }
+        : { id: nextId.current++, color: c, kind: 'pen', points: [p], size: live.current.penSize });
     }
 
     function onUp() {
@@ -1221,9 +1568,9 @@ function AnnotateOverlay({ setCursor }: { setCursor: (c: DemoCursor) => void }) 
       const dr = live.current.draft;
       if (!dr) return;
       setDraft(null);
-      // A click without a drag leaves nothing behind.
+      // An arrow needs some length; a pen press that never moved leaves a dot.
       if (dr.kind === 'arrow' && Math.hypot(dr.to.x - dr.from.x, dr.to.y - dr.from.y) > 6) add(dr);
-      if (dr.kind === 'pen' && dr.points.length > 2) add(dr);
+      if (dr.kind === 'pen') add(dr);
     }
 
     function onClick(e: MouseEvent) {
@@ -1252,6 +1599,7 @@ function AnnotateOverlay({ setCursor }: { setCursor: (c: DemoCursor) => void }) 
       change(live.current.marks.filter((m) => m.id !== hit.id));
       setActiveId(null);
       setOverDelete(false);
+      setOverRotate(false);
       setCursor(baseCursor());
     }
 
@@ -1281,71 +1629,82 @@ function AnnotateOverlay({ setCursor }: { setCursor: (c: DemoCursor) => void }) 
       window.removeEventListener('click', onClick, true);
       window.removeEventListener('contextmenu', onContext, true);
       window.removeEventListener('keydown', onKey);
+      // The tool is down: nothing is half-drawn, hovered or held any more. The marks themselves stay.
+      drag.current = null;
+      setDraft(null);
+      setEditing(null);
+      setHover(null);
+      setActiveId(null);
+      setOverDelete(false);
+      setOverRotate(false);
       setCursor('crosshair');
     };
-  }, [setCursor]);
+    // `noteBox` only reads refs and the live scroll position.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active, setCursor]);
 
   const finishNote = (keep: boolean): void => {
     const text = editing?.text.trim();
     if (keep && editing && text) {
       history.current = [...history.current.slice(-49), marks];
-      setMarks([...marks, { id: nextId.current++, color, kind: 'note', at: editing.at, text, size: noteSize }]);
+      setMarks([...marks, { id: nextId.current++, color, kind: 'note', at: editing.at, text, size: noteSize, font: noteFont, angle: DEFAULT_NOTE_ANGLE }]);
     }
     setEditing(null);
   };
 
-  const swatchMove = reduce ? 'none' : 'opacity 0.2s ease, transform 0.2s ease';
-  const swatchLayer: CSSProperties = { position: 'absolute', inset: 0, borderRadius: '50%', pointerEvents: 'none', boxShadow: 'inset 0 0 0 1px rgba(0, 0, 0, 0.1)' };
   const sx = window.scrollX;
   const sy = window.scrollY;
   // Read after layout so the outline sits on the note where it is now, including mid-drag.
-  const activeNote = tool === 'note' && activeId !== null ? noteEls.current.get(activeId)?.getBoundingClientRect() : undefined;
+  const activeMark = active && tool === 'note' ? marks.find((m): m is NoteMark => m.kind === 'note' && m.id === activeId) : undefined;
+  const activeBox = activeMark ? noteBox(activeMark) : null;
+  const deleteAt = activeBox ? noteDeleteCentre(activeBox) : null;
   const whiteEdge = (c: string): string | undefined => (c === '#FFFFFF' ? 'drop-shadow(0 0 0.75px rgba(0,0,0,0.6))' : undefined);
+  const rowLabel: CSSProperties = { width: 30, flexShrink: 0, fontSize: 11, color: UI.textSecondary, letterSpacing: '-0.01em' };
 
   return (
     <>
-      {/* Options card: the same tabs, sizes and swatches as the extension */}
-      <motion.div
-        data-demo-ui="true"
-        initial={reduce ? false : { opacity: 0, y: -4, x: '-50%' }} animate={{ opacity: 1, y: 0, x: '-50%' }} transition={{ duration: 0.16, ease: 'easeOut' }}
-        style={{
-          position: 'fixed', left: '50%', top: TOOLBAR_H + 12, width: 244, boxSizing: 'border-box', padding: 10, zIndex: 9000,
-          background: UI.bg, border: `1px solid ${UI.border}`, borderRadius: 14, boxShadow: UI.shadow,
-          fontFamily: UI.font, lineHeight: 1.3, letterSpacing: 'normal', userSelect: 'none',
-        }}
-      >
-        <Tabs label="Annotation tool" items={ANNO_TOOLS} value={tool} onChange={setTool} />
+      {/* Options card: the same tabs and rows as the extension. The colour is picked on the toolbar. */}
+      {active && (
+        <Card>
+          <Tabs label="Annotation tool" items={ANNO_TOOLS} value={tool} onChange={setTool} />
 
-        {/* Note size appears only for the tool it applies to */}
-        <div style={{ display: 'grid', gridTemplateRows: tool === 'note' ? '1fr' : '0fr', transition: reduce ? 'none' : `grid-template-rows 0.2s ${UI.easeOut}` }}>
-          <div style={{ overflow: 'hidden', minHeight: 0 }}>
+          {/* Each tool's own settings appear only while it is the tool */}
+          <ToolRows show={tool === 'note'}>
             <div style={{ paddingTop: 8 }}>
               <Tabs label="Note size" items={NOTE_SIZES} value={String(noteSize)} onChange={(id) => setNoteSize(Number(id))} />
             </div>
+            {/* Each face is named in itself, so the choice can be seen before it is made */}
+            <div style={{ paddingTop: 6 }}>
+              <Tabs
+                label="Note font" value={noteFont} onChange={setNoteFont}
+                items={NOTE_FONTS.map((f) => ({ id: f.id, label: f.label, style: { fontFamily: f.stack, fontSize: 12, fontWeight: 600 } }))}
+              />
+            </div>
+          </ToolRows>
+
+          <ToolRows show={tool === 'arrow'}>
+            {(['start', 'end'] as const).map((side) => (
+              <div key={side} style={{ display: 'flex', alignItems: 'center', gap: 8, paddingTop: side === 'start' ? 8 : 6 }}>
+                <span style={rowLabel}>{side === 'start' ? 'Start' : 'End'}</span>
+                <div style={{ flex: 1 }}>
+                  <Tabs label={`Arrow ${side}`} items={ARROW_ENDS} value={ends[side]} onChange={(id) => setEnds((prev) => ({ ...prev, [side]: id }))} />
+                </div>
+              </div>
+            ))}
+          </ToolRows>
+
+          <ToolRows show={tool === 'pen'}>
+            <div style={{ paddingTop: 8 }}>
+              <Tabs label="Pen width" items={PEN_SIZES} value={String(penSize)} onChange={(id) => setPenSize(Number(id))} />
+            </div>
+          </ToolRows>
+
+          <div style={{ marginTop: 10, fontSize: 10, color: UI.textSecondary, letterSpacing: '-0.01em' }}>
+            <div>{ANNO_HINT[tool]}</div>
+            <div>Right-click deletes · {UNDO_KEYS} undoes</div>
           </div>
-        </div>
-
-        <div role="group" aria-label="Annotation colour" style={{ display: 'flex', justifyContent: 'space-between', padding: '0 3px', marginTop: 10 }}>
-          {ANNO_COLORS.map(({ hex, label }) => {
-            const on = hex === color;
-            return (
-              <button
-                key={hex} type="button" aria-label={label} aria-pressed={on} title={label} onClick={() => setColor(hex)}
-                style={{ position: 'relative', width: 20, height: 20, padding: 0, border: 'none', borderRadius: '50%', background: 'transparent', cursor: 'pointer', flexShrink: 0 }}
-              >
-                <span style={{ ...swatchLayer, background: hex, transform: 'scale(1.2)', opacity: on ? 1 : 0, transition: swatchMove }} />
-                <span style={{ ...swatchLayer, background: UI.bg, boxShadow: 'none' }} />
-                <span style={{ ...swatchLayer, background: hex, transform: `scale(${on ? 0.8 : 1})`, transition: swatchMove }} />
-              </button>
-            );
-          })}
-        </div>
-
-        <div style={{ marginTop: 10, fontSize: 10, color: UI.textSecondary, letterSpacing: '-0.01em' }}>
-          <div>{ANNO_HINT[tool]}</div>
-          <div>Right-click deletes · {UNDO_KEYS} undoes</div>
-        </div>
-      </motion.div>
+        </Card>
+      )}
 
       {/* Everything drawn so far, plus the stroke in progress */}
       <svg
@@ -1353,8 +1712,8 @@ function AnnotateOverlay({ setCursor }: { setCursor: (c: DemoCursor) => void }) 
         style={{ position: 'fixed', left: 0, top: 0, width: '100vw', height: '100vh', overflow: 'visible', pointerEvents: 'none', zIndex: 8850 }}
       >
         <g transform={`translate(${-sx} ${-sy})`}>
-          {marks.map((m) => (m.kind === 'note' ? null : <MarkShape key={m.id} mark={m} handles={tool === 'arrow' && m.id === activeId} />))}
-          {draft && <MarkShape mark={draft} />}
+          {marks.map((m) => (m.kind === 'note' ? null : <MarkShape key={m.id} mark={m} handles={active && tool === 'arrow' && m.id === activeId} />))}
+          {draft && <MarkShape mark={draft} drafting />}
         </g>
       </svg>
 
@@ -1365,32 +1724,37 @@ function AnnotateOverlay({ setCursor }: { setCursor: (c: DemoCursor) => void }) 
           ref={(el) => { if (el) noteEls.current.set(m.id, el); else noteEls.current.delete(m.id); }}
           style={{
             ...NOTE_STYLE, position: 'fixed', left: m.at.x - sx, top: m.at.y - sy, zIndex: 8860, maxWidth: 240,
-            whiteSpace: 'pre-wrap', wordBreak: 'break-word', pointerEvents: 'none', color: m.color, fontSize: m.size, filter: whiteEdge(m.color),
+            whiteSpace: 'pre-wrap', wordBreak: 'break-word', pointerEvents: 'none', color: m.color, fontSize: m.size,
+            fontFamily: fontStack(m.font), transform: `rotate(${m.angle}deg)`, filter: whiteEdge(m.color),
           }}
         >
           {m.text}
         </div>
       )))}
 
-      {/* The note you would move: outlined, with its delete button on the corner */}
-      {activeNote && (
+      {/* The note you would move: outlined as it is turned, with a handle that rotates it and a delete button on the corner */}
+      {activeBox && deleteAt && (
         <svg data-demo-ui="true" aria-hidden="true" style={{ position: 'fixed', left: 0, top: 0, width: '100vw', height: '100vh', overflow: 'visible', pointerEvents: 'none', zIndex: 8870 }}>
-          <rect x={activeNote.left - 4} y={activeNote.top - 4} width={activeNote.width + 8} height={activeNote.height + 8} rx="4" fill="none" stroke="rgba(255,69,0,0.6)" strokeDasharray="4 3" />
-          <g transform={`translate(${Math.min(activeNote.right + 6, window.innerWidth - NOTE_DELETE_R - 2)} ${Math.max(activeNote.top - 2, TOOLBAR_H + NOTE_DELETE_R + 2)})`}>
-            <circle r={overDelete ? NOTE_DELETE_R + 1 : NOTE_DELETE_R} fill={UI.accent} stroke="#fff" strokeWidth="1.5" />
-            <path d="M-2.75 -2.75L2.75 2.75M2.75 -2.75L-2.75 2.75" stroke="#fff" strokeWidth="1.5" strokeLinecap="round" />
+          <g transform={`translate(${activeBox.x} ${activeBox.y}) rotate(${(activeBox.angle * 180) / Math.PI})`} fill="none">
+            <rect x={-NOTE_PAD} y={-NOTE_PAD} width={activeBox.w + NOTE_PAD * 2} height={activeBox.h + NOTE_PAD * 2} rx="4" stroke={tint(color, 0.6)} strokeDasharray="4 3" />
+            <path d={`M${activeBox.w / 2} ${-NOTE_PAD}V${-NOTE_ROTATE_OFFSET + NOTE_ROTATE_R}`} stroke={tint(color, 0.6)} />
+            <circle cx={activeBox.w / 2} cy={-NOTE_ROTATE_OFFSET} r={overRotate ? NOTE_ROTATE_R + 1 : NOTE_ROTATE_R} fill="#fff" stroke={color} strokeWidth="1.5" />
+          </g>
+          <g transform={`translate(${deleteAt.x} ${deleteAt.y})`}>
+            <circle r={overDelete ? NOTE_DELETE_R + 1 : NOTE_DELETE_R} fill={color} stroke="#fff" strokeWidth="1.5" />
+            <path d="M-2.75 -2.75L2.75 2.75M2.75 -2.75L-2.75 2.75" stroke={onColor(color)} strokeWidth="1.5" strokeLinecap="round" />
           </g>
         </svg>
       )}
 
-      {tool === 'size' && hover && (
+      {active && tool === 'size' && hover && (
         <>
           <ElementHighlight box={hover} />
           <Chip x={hover.x} y={Math.max(TOOLBAR_H + 4, hover.y - 26)}>{dims({ width: hover.w, height: hover.h })}</Chip>
         </>
       )}
 
-      {editing && (
+      {active && editing && (
         <input
           data-demo-ui="true" autoFocus name="note" autoComplete="off" aria-label="Note text" value={editing.text} spellCheck={false} placeholder="Write a note…"
           size={Math.max(12, editing.text.length + 1)}
@@ -1403,6 +1767,7 @@ function AnnotateOverlay({ setCursor }: { setCursor: (c: DemoCursor) => void }) 
           style={{
             ...NOTE_STYLE, position: 'fixed', left: editing.at.x - sx, top: editing.at.y - sy, zIndex: 8900,
             margin: 0, padding: 0, border: 'none', outline: 'none', background: 'transparent', color, caretColor: color, fontSize: noteSize,
+            fontFamily: fontStack(noteFont), transform: `rotate(${DEFAULT_NOTE_ANGLE}deg)`,
           }}
         />
       )}
@@ -1416,16 +1781,18 @@ export function DemoOverlay() {
   const demo = useDemo();
   return (
     <>
-      {/* Hover states for the details panel, and the accent text highlight */}
+      {/* Hover states for the details panel, and the text highlight in the mark colour */}
       <style>{`
         .demo-row { transition: background 0.1s ease; }
         .demo-row:hover { background: ${UI.hover}; }
-        ::highlight(${HIGHLIGHT_NAME}) { background-color: ${UI.accent}; color: #fff; }
+        ::highlight(${HIGHLIGHT_NAME}) { background-color: ${demo.color}; color: ${onColor(demo.color)}; }
       `}</style>
       {demo.inspect && <InspectOverlay setCursor={demo.setCursor} />}
       {demo.measure && <MeasureOverlay setCursor={demo.setCursor} />}
-      {demo.guides  && <GuidesOverlay setCursor={demo.setCursor} />}
-      {demo.annotate && <AnnotateOverlay setCursor={demo.setCursor} />}
+      {/* Guides and annotations stay on the page while the demo is open, whichever tool is on,
+          and with none on: the page is browsed as usual with the marks still drawn. */}
+      {demo.isOpen && <GuidesOverlay active={demo.guides} setCursor={demo.setCursor} />}
+      {demo.isOpen && <AnnotateOverlay active={demo.annotate} setCursor={demo.setCursor} />}
     </>
   );
 }

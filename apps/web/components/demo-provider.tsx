@@ -1,11 +1,31 @@
 'use client';
 import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from 'react';
 
-/** Same modes as the extension. Colours and box values live inside Inspect. */
+/** Same modes as the extension. Colours and box values live inside Inspect. With none on, the page is simply browsed. */
 export type DemoKey = 'inspect' | 'measure' | 'guides' | 'annotate';
 
 /** What the demo cursor should look like, set by the active tool. */
 export type DemoCursor = 'crosshair' | 'text' | 'delete' | 'remove' | 'move-x' | 'move-y' | 'pen' | 'ibeam' | 'grab';
+
+/** The colour every tool draws in: the brand accent, as the extension starts out. */
+const MARK_COLOR = '#FF4500';
+
+function channels(hex: string): [number, number, number] {
+  const n = parseInt(hex.slice(1), 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+
+/** A mark colour at the given opacity. */
+export function tint(hex: string, alpha: number): string {
+  const [r, g, b] = channels(hex);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+/** What to draw on top of a mark colour: white, or near-black on a light one. */
+export function onColor(hex: string): string {
+  const [r, g, b] = channels(hex);
+  return (0.299 * r + 0.587 * g + 0.114 * b) / 255 > 0.75 ? '#111111' : '#ffffff';
+}
 
 interface DemoCtx {
   isOpen:    boolean;
@@ -16,6 +36,8 @@ interface DemoCtx {
   anyTool:   boolean;
   cursor:    DemoCursor;
   setCursor: (c: DemoCursor) => void;
+  /** The one colour every tool draws in: guides, highlights, measurements, annotations. */
+  color:     string;
   open:      () => void;
   close:     () => void;
   toggle:    (k: DemoKey) => void;
@@ -39,6 +61,7 @@ export function DemoProvider({ children }: { children: ReactNode }) {
     anyTool: tools.inspect || tools.measure || tools.guides || tools.annotate,
     cursor,
     setCursor,
+    color: MARK_COLOR,
     open:   () => setIsOpen(true),
     close:  () => { setIsOpen(false); setTools(OFF); setCursorState('crosshair'); },
     toggle: (k) => { setCursorState('crosshair'); setTools((p) => (p[k] ? { ...OFF } : { ...OFF, [k]: true })); },

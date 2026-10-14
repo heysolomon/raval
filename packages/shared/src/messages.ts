@@ -10,8 +10,10 @@ export type Message =
   | { type: 'SWITCH_MODE'; mode: Mode }
   | { type: 'TOGGLE_GUIDES'; enabled: boolean }
   | { type: 'TOGGLE_GUIDE_LABELS'; enabled: boolean }
+  | { type: 'TOGGLE_GUIDE_GAPS'; enabled: boolean }
   | { type: 'TOGGLE_SNAP'; enabled: boolean }
   | { type: 'TOGGLE_RULERS'; enabled: boolean }
+  | { type: 'TOGGLE_SPACING'; enabled: boolean }
   | { type: 'CAPTURE_SCREENSHOT' }
   | { type: 'CAPTURE_VISIBLE' }
   | { type: 'DOWNLOAD_DATA_URL'; dataUrl: string; filename: string }

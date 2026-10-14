@@ -1,7 +1,7 @@
 /**
  * Element detection — finds and characterises DOM elements under the cursor.
  */
-import type { Rect, BoxModel, BoxModelValues } from '@raval/shared';
+import type { Rect, BoxModel, BoxModelValues, CornerRadius, CornerRadii } from '@raval/shared';
 import { domRectToRect, parsePx, isRavalElement } from './utils';
 
 const HIT_MEMO_MS = 100;
@@ -70,4 +70,46 @@ export function getBoxModel(el: Element): BoxModel {
   const content: Rect = domRectToRect(contentRect);
 
   return { content, padding, border, margin };
+}
+
+/** Resolve one computed corner value ("8px", "8px 16px", "50%") against the element's box. */
+function parseCorner(value: string, width: number, height: number): CornerRadius {
+  const [h = '0', v = h] = value.trim().split(/\s+/);
+  const resolve = (part: string, size: number): number =>
+    Math.max(0, part.endsWith('%') ? (parseFloat(part) / 100) * size : parsePx(part));
+  return { x: resolve(h, width), y: resolve(v, height) };
+}
+
+/**
+ * Corner radii as rendered: percentages resolved, oversized values scaled down
+ * the way the browser does it (so a 9999px pill reports half its height), and
+ * CSS scale transforms applied. Null when every corner is square.
+ */
+export function getCornerRadii(el: Element): CornerRadii | null {
+  const style = window.getComputedStyle(el);
+  const rect = el.getBoundingClientRect();
+  // Radii are laid out against the untransformed border box.
+  const width = el instanceof HTMLElement && el.offsetWidth > 0 ? el.offsetWidth : rect.width;
+  const height = el instanceof HTMLElement && el.offsetHeight > 0 ? el.offsetHeight : rect.height;
+  if (width === 0 || height === 0) return null;
+
+  const tl = parseCorner(style.borderTopLeftRadius, width, height);
+  const tr = parseCorner(style.borderTopRightRadius, width, height);
+  const br = parseCorner(style.borderBottomRightRadius, width, height);
+  const bl = parseCorner(style.borderBottomLeftRadius, width, height);
+  const corners = [tl, tr, br, bl];
+  if (corners.every((c) => c.x === 0 || c.y === 0)) return null;
+
+  // Adjacent corners may not overlap: shrink them all by the tightest side.
+  const fit = (size: number, a: number, b: number): number => (a + b > size ? size / (a + b) : 1);
+  const f = Math.min(
+    fit(width, tl.x, tr.x), fit(width, bl.x, br.x),
+    fit(height, tl.y, bl.y), fit(height, tr.y, br.y),
+  );
+  const sx = (rect.width / width) * f;
+  const sy = (rect.height / height) * f;
+  // A corner with one zero axis is square.
+  const used = (c: CornerRadius): CornerRadius => (c.x === 0 || c.y === 0 ? { x: 0, y: 0 } : { x: c.x * sx, y: c.y * sy });
+
+  return { topLeft: used(tl), topRight: used(tr), bottomRight: used(br), bottomLeft: used(bl) };
 }

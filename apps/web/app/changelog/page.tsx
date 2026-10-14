@@ -25,6 +25,35 @@ const SECTION_ORDER: SectionName[] = ['Added', 'Changed', 'Fixed', 'Removed'];
 
 const entries: ChangelogEntry[] = [
   {
+    version: '0.4.0',
+    date: null,
+    preRelease: true,
+    sections: {
+      Added: [
+        'Inspect shows an element’s corner radius next to its size, and the outline follows its rounded corners',
+        'Show spacing in Inspect (B): the padding, margin, and gaps between children of the element you click',
+        'Guides measure the distance between two parallel guides when the pointer rests between them, and from a guide you point at or drag',
+        'Browse: put the tool down with 0, the hand button, or by pressing the active tool again. The page works as usual and your guides and annotations stay',
+        'One colour for guides, highlights, measurements, and annotations, picked in any mode’s options or with Shift+1–8',
+        'Notes can be rotated with the handle above them; hold Shift for 15° steps',
+        'Four handwriting fonts for notes',
+        'Arrow ends: nothing, an arrowhead, a bar, or a dot at either end, so an arrow can also be a plain line',
+        'The pen draws ink that thins as you move faster, in four widths. Hold Shift for a straight line; click for a dot',
+      ],
+      Changed: [
+        'Snapping guides to page edges takes far less work, so Guides stays smooth on slower computers',
+      ],
+      Fixed: [
+        'Keyboard shortcuts stopped working after clicking a toolbar button',
+        'Clicking the page could put the cursor in a text field, after which shortcuts were typed into it',
+        'After switching tools with a key, the focus ring stayed on the previous tool',
+        'Guides could not be placed along the top and left edges of the window, over embedded content, or on disabled buttons',
+        'The toolbar did not move back after an options card closed',
+        'Undo did not reverse moving a note or an arrow',
+      ],
+    },
+  },
+  {
     version: '0.3.2',
     date: null,
     preRelease: true,

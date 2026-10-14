@@ -1,7 +1,7 @@
 /**
  * Geometry helpers, formatting, and shared utilities for the content script.
  */
-import type { Rect } from '@raval/shared';
+import type { Rect, CornerRadius, CornerRadii } from '@raval/shared';
 
 // ─── Geometry ─────────────────────────────────────────────────────────────────
 
@@ -89,6 +89,19 @@ export function lerp(a: number, b: number, t: number): number {
 /** Format dimensions as "W × H" */
 export function formatDimensions(width: number, height: number): string {
   return `${Math.round(width)} × ${Math.round(height)}`;
+}
+
+/** Format rendered corner radii the way the shorthand reads: "R 8", "R 8 8 0 0", "R 160/24" */
+export function formatRadii(radii: CornerRadii): string {
+  const one = (c: CornerRadius): string => {
+    const x = Math.round(c.x); const y = Math.round(c.y);
+    return x === y ? String(x) : `${x}/${y}`;
+  };
+  const [tl, tr, br, bl] = [radii.topLeft, radii.topRight, radii.bottomRight, radii.bottomLeft].map(one);
+  if (tl === tr && tr === br && br === bl) return `R ${tl}`;
+  if (tl === br && tr === bl) return `R ${tl} ${tr}`;
+  if (tr === bl) return `R ${tl} ${tr} ${br}`;
+  return `R ${tl} ${tr} ${br} ${bl}`;
 }
 
 /** Format a pixel distance */

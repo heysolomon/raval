@@ -263,9 +263,21 @@ async function handlePopupMessage(
       sendResponse(next);
       break;
     }
+    case 'TOGGLE_GUIDE_GAPS': {
+      const next = setTabState(tabId, { showGuideGaps: msg.enabled });
+      await sendToContent(tabId, { type: 'TOGGLE_GUIDE_GAPS', enabled: msg.enabled });
+      sendResponse(next);
+      break;
+    }
     case 'TOGGLE_SNAP': {
       const next = setTabState(tabId, { snapToElements: msg.enabled });
       await sendToContent(tabId, { type: 'TOGGLE_SNAP', enabled: msg.enabled });
+      sendResponse(next);
+      break;
+    }
+    case 'TOGGLE_SPACING': {
+      const next = setTabState(tabId, { showSpacing: msg.enabled });
+      await sendToContent(tabId, { type: 'TOGGLE_SPACING', enabled: msg.enabled });
       sendResponse(next);
       break;
     }
@@ -427,9 +439,21 @@ async function handleContentMessage(
       sendResponse(next);
       break;
     }
+    case 'TOGGLE_GUIDE_GAPS': {
+      const next = setTabState(tabId, { showGuideGaps: msg.enabled });
+      await sendToContent(tabId, { type: 'TOGGLE_GUIDE_GAPS', enabled: msg.enabled });
+      sendResponse(next);
+      break;
+    }
     case 'TOGGLE_SNAP': {
       const next = setTabState(tabId, { snapToElements: msg.enabled });
       await sendToContent(tabId, { type: 'TOGGLE_SNAP', enabled: msg.enabled });
+      sendResponse(next);
+      break;
+    }
+    case 'TOGGLE_SPACING': {
+      const next = setTabState(tabId, { showSpacing: msg.enabled });
+      await sendToContent(tabId, { type: 'TOGGLE_SPACING', enabled: msg.enabled });
       sendResponse(next);
       break;
     }

@@ -107,6 +107,8 @@ function buildHTML(): string {
     </div>
 
     ${section('Modes', `
+      ${row(['⇧', '1–8'], 'Pick the colour guides, highlights and annotations are drawn in')}
+      ${row(['0'], 'Browse — no tool; use the page, your marks stay')}
       ${row(['1'], 'Inspect — size, type and colours')}
       ${row(['2'], 'Measure — click two elements to compare')}
       ${row(['3'], 'Guides — crosshair + pin guide lines')}
@@ -116,6 +118,7 @@ function buildHTML(): string {
     ${section('Inspect Mode', `
       ${row(['Click'], 'Open details for text or an element')}
       ${row(['F'], 'Cycle colour format')}
+      ${row(['B'], 'Show padding, margin and gaps of what you click')}
     `)}
 
     ${section('Guides Mode', `
@@ -133,14 +136,14 @@ function buildHTML(): string {
       ${row(['M'], 'Callout tool — click an element to mark its width and height')}
       ${row(['N'], 'Note tool — click to write')}
       ${row(['A'], 'Arrow tool — drag to draw')}
-      ${row(['P'], 'Pen tool — freehand')}
+      ${row(['P'], 'Pen tool — freehand; Shift rules a straight line')}
       ${row(['Drag an arrow'], 'Ends re-aim, middle bends, body moves')}
       ${row(['⇧'], 'Hold while drawing an arrow to lock the angle')}
       ${row(['Drag a note'], 'Move it; its corner button deletes it')}
+      ${row(['Drag a note\'s handle'], 'Rotate it; Shift locks to 15° steps')}
       ${row(['Enter'], 'Save the note you are writing')}
       ${row(['Esc'], 'Cancel the note you are writing')}
       ${row(['Right-click'], 'Remove one annotation')}
-      ${row(['⇧', '1–8'], 'Pick annotation colour')}
       ${row(['Del'], 'Clear all annotations')}
       ${row(['S'], 'Export annotated view as PNG')}
     `)}

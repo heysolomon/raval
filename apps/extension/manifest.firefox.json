@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Raval — Measure & Inspect Web Pages",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "description": "Measure, inspect and annotate any webpage: sizes, gaps, fonts, colours and guides. Free and open source.",
   "author": "Raval Contributors",
 

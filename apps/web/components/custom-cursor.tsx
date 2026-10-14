@@ -1,7 +1,7 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
 import { useReducedMotion } from 'framer-motion';
-import { useDemo, type DemoCursor } from './demo-provider';
+import { useDemo, onColor, type DemoCursor } from './demo-provider';
 
 const ARROWS = 'M0 -8.5V8.5M-3.5 -5L0 -8.5L3.5 -5M-3.5 5L0 8.5L3.5 5';
 
@@ -20,7 +20,9 @@ const PEN = 'M0 0L1.3 -4.4L10.2 -13.3a1.9 1.9 0 0 1 2.7 0l0.4 0.4a1.9 1.9 0 0 1 
  * aside for the browser's own text cursor over words and while placing a note.
  */
 export function CustomCursor() {
-  const { anyTool, cursor } = useDemo();
+  const { anyTool, cursor, color } = useDemo();
+  // Drawn in the mark colour; what sits on or around it flips to dark when that colour is light.
+  const on = onColor(color);
   const reduceMotion = useReducedMotion();
   const ref = useRef<HTMLDivElement>(null);
   const [overUI, setOverUI] = useState(false);
@@ -69,41 +71,41 @@ export function CustomCursor() {
       >
         <div style={layer('crosshair')}>
           <svg width="18" height="18" viewBox="-9 -9 18 18" style={{ display: 'block', overflow: 'visible' }}>
-            <line x1="-9" y1="0" x2="-4" y2="0" stroke="#FF4500" strokeWidth="1.5" strokeLinecap="round" />
-            <line x1="4" y1="0" x2="9" y2="0" stroke="#FF4500" strokeWidth="1.5" strokeLinecap="round" />
-            <line x1="0" y1="-9" x2="0" y2="-4" stroke="#FF4500" strokeWidth="1.5" strokeLinecap="round" />
-            <line x1="0" y1="4" x2="0" y2="9" stroke="#FF4500" strokeWidth="1.5" strokeLinecap="round" />
-            <circle cx="0" cy="0" r="2.5" stroke="#FF4500" strokeWidth="1.5" fill="none" />
+            <line x1="-9" y1="0" x2="-4" y2="0" stroke={color} strokeWidth="1.5" strokeLinecap="round" />
+            <line x1="4" y1="0" x2="9" y2="0" stroke={color} strokeWidth="1.5" strokeLinecap="round" />
+            <line x1="0" y1="-9" x2="0" y2="-4" stroke={color} strokeWidth="1.5" strokeLinecap="round" />
+            <line x1="0" y1="4" x2="0" y2="9" stroke={color} strokeWidth="1.5" strokeLinecap="round" />
+            <circle cx="0" cy="0" r="2.5" stroke={color} strokeWidth="1.5" fill="none" />
           </svg>
         </div>
         <div style={layer('delete')}>
           <svg width="22" height="22" viewBox="-11 -11 22 22" style={{ display: 'block', overflow: 'visible', flexShrink: 0 }}>
-            <circle r="9.5" fill="#FF4500" stroke="#fff" strokeWidth="1.5" />
-            <path d="M-3.25 -3.25L3.25 3.25M3.25 -3.25L-3.25 3.25" stroke="#fff" strokeWidth="1.75" strokeLinecap="round" />
+            <circle r="9.5" fill={color} stroke={on} strokeWidth="1.5" />
+            <path d="M-3.25 -3.25L3.25 3.25M3.25 -3.25L-3.25 3.25" stroke={on} strokeWidth="1.75" strokeLinecap="round" />
           </svg>
         </div>
         <div style={layer('remove')}>
           <svg width="22" height="22" viewBox="-11 -11 22 22" style={{ display: 'block', overflow: 'visible', flexShrink: 0 }}>
-            <circle r="9.5" fill="#FF4500" stroke="#fff" strokeWidth="1.5" />
-            <path d="M-4.25 0H4.25" stroke="#fff" strokeWidth="1.75" strokeLinecap="round" />
+            <circle r="9.5" fill={color} stroke={on} strokeWidth="1.5" />
+            <path d="M-4.25 0H4.25" stroke={on} strokeWidth="1.75" strokeLinecap="round" />
           </svg>
         </div>
         <div style={layer('pen')}>
           <svg width="18" height="18" viewBox="-9 -9 18 18" strokeLinejoin="round" strokeLinecap="round" style={{ display: 'block', overflow: 'visible', flexShrink: 0 }}>
-            <path d={PEN} fill="#fff" stroke="#fff" strokeWidth="4" />
-            <path d={PEN} fill="#fff" stroke="#FF4500" strokeWidth="1.5" />
+            <path d={PEN} fill={on} stroke={on} strokeWidth="4" />
+            <path d={PEN} fill={on} stroke={color} strokeWidth="1.5" />
           </svg>
         </div>
         <div style={layer('grab')}>
           <svg width="18" height="18" viewBox="-9 -9 18 18" style={{ display: 'block', overflow: 'visible', flexShrink: 0 }}>
-            <circle r="6.5" fill="#fff" />
-            <circle r="5" fill="#fff" stroke="#FF4500" strokeWidth="1.75" />
+            <circle r="6.5" fill={on} />
+            <circle r="5" fill={on} stroke={color} strokeWidth="1.75" />
           </svg>
         </div>
         <div style={layer('move', cursor === 'move-x' ? ' rotate(90deg)' : '')}>
           <svg width="22" height="22" viewBox="-11 -11 22 22" fill="none" strokeLinecap="round" strokeLinejoin="round" style={{ display: 'block', overflow: 'visible', flexShrink: 0 }}>
-            <path d={ARROWS} stroke="#fff" strokeWidth="4.5" />
-            <path d={ARROWS} stroke="#FF4500" strokeWidth="1.75" />
+            <path d={ARROWS} stroke={on} strokeWidth="4.5" />
+            <path d={ARROWS} stroke={color} strokeWidth="1.75" />
           </svg>
         </div>
       </div>

@@ -1,6 +1,7 @@
 'use client';
-import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { createContext, useContext, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { AnimatePresence, motion, useReducedMotion, type MotionStyle } from 'framer-motion';
+import { inkPathData } from '@raval/shared';
 
 /**
  * A scripted simulation of someone using the extension, played in a mock macOS
@@ -37,8 +38,79 @@ const SHADOW = '0 1px 2px rgba(0, 0, 0, 0.04), 0 6px 20px rgba(0, 0, 0, 0.06)';
 const SPRING = { type: 'spring', stiffness: 1000, damping: 63, mass: 1 } as const;
 const EASE = [0.4, 0, 0.2, 1] as const;
 const EASE_IN_OUT = [0.645, 0.045, 0.355, 1] as const;
-/** Below 1 plays the whole script faster. */
-const PACE = 0.78;
+
+// ─── Tuning ───────────────────────────────────────────────────────────────────
+// Everything about the demo that is a matter of taste rather than structure: how
+// fast it plays, how long it rests on each thing worth looking at, and the small
+// optical corrections. These are the values the site ships with. In development
+// the panel on /record edits them live and copies out what was changed, to be
+// written back here.
+
+export const HERO_TUNING = {
+  /** Below 1 plays the whole script faster. */
+  pace: 0.78,
+  /** Multiplies how long the cursor takes to travel between things. */
+  travel: 1,
+  /** Milliseconds per letter while the note is typed, and per sample while the pen draws. */
+  typing: 50,
+  inkStep: 34,
+  /** Seconds the demo rests on each beat before moving on. */
+  hold: {
+    spacing: 1.5,
+    typography: 1.5,
+    colours: 1.5,
+    measured: 1,
+    unpinHover: 0.8,
+    gaps: 1.6,
+    guideHint: 1,
+    gapAfterDrag: 1,
+    callout: 0.6,
+    arrowBent: 0.45,
+    noteTyped: 0.4,
+    noteTurned: 0.5,
+    ink: 0.5,
+    saved: 2.2,
+  },
+  /**
+   * Neue Plak's letters sit above the middle of its line box, so a label centred by the browser
+   * looks too high in a tab. `tab` moves 7.5px tab text down to where its capitals are centred.
+   * It is applied as a transform: an offset in layout (`top`) snaps to whole pixels and can only
+   * land a little high or a little low. Capitals-only labels (HEX, S, XL) have no descenders to
+   * balance, so `caps` is smaller. Flex centres a glyph by its advance width, not its ink, so the
+   * measure badges get their own offsets: `badgeY` for all three, `badgeBX` for the B.
+   */
+  nudge: { tab: 1.55, caps: 1.2, badgeY: 0.98, badgeBX: -0.26 },
+  /** The note: where it is written, how it leans when fresh, and how far the handle turns it. */
+  note: { x: 508, y: 352, size: 16, tilt: -1.5, turned: -9 },
+  /** The pen stroke under the second card's price. `wave` is how far it wanders from straight. */
+  ink: { x: 272, y: 263, length: 44, size: 3.4, wave: 1.6, rise: 1.5 },
+};
+
+export type HeroTuning = typeof HERO_TUNING;
+/** Any subset of the settings, as the tuning panel copies them out. */
+export type HeroTuningPatch = { [K in keyof HeroTuning]?: HeroTuning[K] extends object ? Partial<HeroTuning[K]> : HeroTuning[K] };
+
+/** The shipped settings with a patch laid over them. Unknown keys and non-numbers are ignored. */
+export function mergeTuning(patch: HeroTuningPatch | undefined): HeroTuning {
+  if (!patch) return HERO_TUNING;
+  const out = structuredClone(HERO_TUNING) as unknown as Record<string, number | Record<string, number>>;
+  const given = patch as Record<string, unknown>;
+  for (const [key, base] of Object.entries(HERO_TUNING)) {
+    const value = given[key];
+    if (typeof base === 'number') {
+      if (typeof value === 'number' && Number.isFinite(value)) out[key] = value;
+    } else if (value && typeof value === 'object') {
+      const group = out[key] as Record<string, number>;
+      for (const inner of Object.keys(base)) {
+        const v = (value as Record<string, unknown>)[inner];
+        if (typeof v === 'number' && Number.isFinite(v)) group[inner] = v;
+      }
+    }
+  }
+  return out as unknown as HeroTuning;
+}
+
+const Tune = createContext<HeroTuning>(HERO_TUNING);
 
 // ─── The mock page, in page coordinates ───────────────────────────────────────
 
@@ -50,16 +122,23 @@ const CARD_A: Box = { x: 56, y: 200, w: 140, h: 112 };
 const CARD_B: Box = { x: 260, y: 200, w: 140, h: 112 };
 const CARD_C: Box = { x: 444, y: 96, w: 140, h: 216 };
 const BOXES = { a: CARD_A, b: CARD_B, c: CARD_C } as const;
+/** Corner radius of the mock page's rounded elements, which Inspect reads out and outlines along. */
+const CARD_RADIUS = 8;
+const RADIUS_OF = new Map<Box, number>([[CARD_A, CARD_RADIUS], [CARD_B, CARD_RADIUS], [CARD_C, CARD_RADIUS]]);
+/** The cards' padding, shown when Inspect's spacing is on. */
+const CARD_PAD = 12;
 type Pin = keyof typeof BOXES;
 
 type Mode = 'inspect' | 'measure' | 'guides' | 'annotate';
 const MODES: Mode[] = ['inspect', 'measure', 'guides', 'annotate'];
 /** Centres of things on the mock toolbar. */
 const MODE_BTN: Record<Mode, { x: number; y: number }> = {
-  inspect: { x: 254, y: 56 }, measure: { x: 280, y: 56 }, guides: { x: 306, y: 56 }, annotate: { x: 332, y: 56 },
+  inspect: { x: 267, y: 56 }, measure: { x: 293, y: 56 }, guides: { x: 319, y: 56 }, annotate: { x: 345, y: 56 },
 };
+/** Left edge of the mock toolbar. The mode buttons above are measured from it. */
+const TOOLBAR_X = 197;
 /** Capture a region: next to the whole-view camera on the toolbar. */
-const REGION_BTN = { x: 389, y: 56 };
+const REGION_BTN = { x: 402, y: 56 };
 /** What the demo captures: the marked-up card, its arrow and the note. */
 const REGION: Box = { x: 236, y: 170, w: 372, h: 222 };
 
@@ -69,33 +148,57 @@ const PANEL_HEAD = 22;
 const PANEL_TYPE_BODY = 63;
 const COLOURS_HEADER = { x: PANEL.x + 60, y: PANEL.y + PANEL_HEAD * 2 + PANEL_TYPE_BODY + PANEL_HEAD / 2 };
 
-// Annotate options card, under the toolbar's right end.
-const TRAY: Box = { x: 268, y: 80, w: 150, h: 54 };
+// Annotate options card, under the toolbar's right end. `h` is its height with no tool rows open.
+const TRAY: Box = { x: 281, y: 80, w: 150, h: 54 };
 type Tool = 'size' | 'note' | 'arrow' | 'pen';
 const TOOLS: Tool[] = ['size', 'note', 'arrow', 'pen'];
 /** The first tool is called Callout on the card; `size` is only its name in here. */
 const TOOL_LABEL: Record<Tool, string> = { size: 'Callout', note: 'Note', arrow: 'Arrow', pen: 'Pen' };
 const TOOL_W = (TRAY.w - 16) / 4;
-const toolBtn = (t: Tool): { x: number; y: number } => ({ x: TRAY.x + 8 + TOOL_W * (TOOLS.indexOf(t) + 0.5), y: TRAY.y + 8 + 9 });
-/**
- * Neue Plak's letters sit above the middle of its line box, so a label centred by the browser
- * looks too high in a tab. This moves 7.5px tab text down to where its capitals are centred.
- * It is applied as a transform: an offset in layout (`top`) snaps to whole pixels and can only
- * land a little high or a little low.
- */
-const TAB_NUDGE = 1.55;
-// Capitals-only labels (HEX, RGB, HSL) have no descenders to balance, so they need less.
-const CAPS_NUDGE = 1.2;
-// Flex centres a glyph by its advance width, not its ink: each badge letter gets its own optical offset.
-const BADGE_NUDGE: Record<string, [number, number]> = { A: [0, 0.98], B: [-0.26, 0.98], C: [0, 0.98] };
+// The card, top to bottom: colour swatches, tool tabs, then the rows of the tool that is on.
+const SWATCH_ROW = 12;
+const TAB_ROW = 18;
+const SUB_ROW = 16;
+const ROW_GAP = 7;
+const SUB_GAP = 5;
+const TABS_Y = 8 + SWATCH_ROW + ROW_GAP;
+const SUB_Y = TABS_Y + TAB_ROW + SUB_GAP + 1;
+const toolBtn = (t: Tool): { x: number; y: number } => ({ x: TRAY.x + 8 + TOOL_W * (TOOLS.indexOf(t) + 0.5), y: TRAY.y + TABS_Y + TAB_ROW / 2 });
+/** How many rows each tool adds under the tabs: note has size and font, arrow has start and end, pen has width. */
+const SUB_ROWS: Record<Tool, number> = { size: 0, note: 2, arrow: 2, pen: 1 };
+const trayHeight = (t: Tool): number => TRAY.h + (SUB_ROWS[t] ? 1 + SUB_ROWS[t] * (SUB_ROW + SUB_GAP) : 0);
+/** Arrow rows carry a label, so their tabs are narrower. */
+const END_LABEL_W = 28;
+const ARROW_ENDS = ['None', 'Arrow', 'Bar', 'Dot'] as const;
+type ArrowEnd = (typeof ARROW_ENDS)[number];
+/** Centre of an end choice on the arrow tool's Start (row 0) or End (row 1) row. */
+const endBtn = (row: 0 | 1, end: ArrowEnd): { x: number; y: number } => {
+  const w = (TRAY.w - 16 - END_LABEL_W) / ARROW_ENDS.length;
+  return { x: TRAY.x + 8 + END_LABEL_W + w * (ARROW_ENDS.indexOf(end) + 0.5), y: TRAY.y + SUB_Y + row * (SUB_ROW + SUB_GAP) + SUB_ROW / 2 };
+};
 const SWATCHES = [ACCENT, '#FF2D85', BLUE, '#16A34A', '#7C3AED', '#111111'];
-const swatchAt = (i: number): { x: number; y: number } => ({ x: TRAY.x + 16 + i * 23.6, y: TRAY.y + 39 });
+const swatchAt = (i: number): { x: number; y: number } => ({ x: TRAY.x + 16 + i * 23.6, y: TRAY.y + 8 + SWATCH_ROW / 2 });
 
 // Arrow endpoints and the point it is bent through.
 const ARROW_FROM = { x: 500, y: 356 };
 const ARROW_TO = { x: CARD_B.x + CARD_B.w - 10, y: CARD_B.y + CARD_B.h + 8 };
 const ARROW_MID = { x: (ARROW_FROM.x + ARROW_TO.x) / 2, y: (ARROW_FROM.y + ARROW_TO.y) / 2 };
 const ARROW_BEND = { x: ARROW_MID.x + 4, y: ARROW_MID.y + 22 };
+
+/** Roughly how wide and tall the finished note is; only used to aim the cursor at it and its handle. */
+const NOTE_SIZE = { w: 70, h: 20 };
+
+/** The pen stroke's samples: slow at the ends, quick through the middle, so the ink thins there. */
+function inkSamples(ink: HeroTuning['ink']): { x: number; y: number }[] {
+  return Array.from({ length: 26 }, (_, i) => {
+    const t = i / 25;
+    // Ease in and out along the line, so samples bunch up at the ends.
+    const along = t * t * (3 - 2 * t);
+    return { x: ink.x + along * ink.length, y: ink.y + Math.sin(t * Math.PI * 2.2) * ink.wave - along * ink.rise };
+  });
+}
+
+interface Gap { x1: number; y1: number; x2: number; y2: number; label: string; at: { x: number; y: number } }
 
 type CursorKind = 'pointer' | 'crosshair' | 'text' | 'pen' | 'remove' | 'delete' | 'move' | 'grab';
 
@@ -115,12 +218,26 @@ interface Frame {
   preview: { snapped: boolean; at?: { x: number; y: number } } | null;
   guideV: number | null;
   guideH: { y: number; dur: number; strong: boolean } | null;
+  /** A second pair of guides, so there is a gap to measure. */
+  guideV2: number | null;
+  guideH2: number | null;
+  /** Distances between guides being shown. */
+  gaps: Gap[];
+  /** Inspect: the second card is clicked with spacing on, so its padding is drawn on it. */
+  spacing: boolean;
   hint: string | null;
   tool: Tool;
   colour: string;
   arrow: false | 'straight' | 'bent';
   arrowHandles: boolean;
+  /** What the arrow's tail is drawn with. */
+  arrowStart: ArrowEnd;
   note: string;
+  /** The note is pointed at: outlined, with its rotate handle. */
+  noteActive: boolean;
+  noteAngle: number;
+  /** How many samples of the pen stroke have been drawn. */
+  ink: number;
   sizeMark: boolean;
   toast: { text: string; ok: boolean } | null;
   flash: number;
@@ -137,8 +254,8 @@ const START: Frame = {
   clicks: 0,
   hover: null, wordHover: false, wordSelected: false, panel: false,
   pins: [], lines: [],
-  preview: null, guideV: null, guideH: null, hint: null,
-  tool: 'size', colour: ACCENT, arrow: false, arrowHandles: false, note: '', sizeMark: false,
+  preview: null, guideV: null, guideH: null, guideV2: null, guideH2: null, gaps: [], spacing: false, hint: null,
+  tool: 'size', colour: ACCENT, arrow: false, arrowHandles: false, arrowStart: 'None', note: '', noteActive: false, noteAngle: HERO_TUNING.note.tilt, ink: 0, sizeMark: false,
   toast: null, flash: 0, capturing: false, region: null,
   fading: false,
 };
@@ -170,16 +287,17 @@ const SELECTED_LOOK = { backgroundColor: 'rgba(255,69,0,0.14)', borderColor: 'rg
  * look and only deepens. Fading it in from nothing, while the hover one faded out beneath it,
  * read as a blink, as if the click had landed twice.
  */
-function Highlight({ box, selected }: { box: Box; selected?: boolean }) {
-  const place = { x: box.x, y: box.y, width: box.w, height: box.h };
+function Highlight({ box, selected, radius = 3, hollow = false }: { box: Box; selected?: boolean; radius?: number; hollow?: boolean }) {
+  // `radius` follows the element's own corners; `hollow` leaves the inside clear for the spacing bands.
+  const place = { x: box.x, y: box.y, width: box.w, height: box.h, borderRadius: radius };
   return (
     <motion.div
       initial={{ opacity: selected ? 1 : 0, ...place, ...HOVER_LOOK }}
-      animate={{ opacity: 1, ...place, ...(selected ? SELECTED_LOOK : HOVER_LOOK) }}
+      animate={{ opacity: 1, ...place, ...(selected ? SELECTED_LOOK : HOVER_LOOK), ...(hollow ? { backgroundColor: 'rgba(255,69,0,0)' } : null) }}
       variants={LEAVE} exit="gone"
       transition={{ ...SPRING, opacity: { duration: 0.12 }, backgroundColor: { duration: 0.18 }, borderColor: { duration: 0.18 } }}
       style={{
-        position: 'absolute', left: 0, top: 0, boxSizing: 'border-box', borderRadius: 3,
+        position: 'absolute', left: 0, top: 0, boxSizing: 'border-box',
         borderStyle: 'solid', borderWidth: selected ? 1.5 : 1,
       }}
     />
@@ -187,7 +305,8 @@ function Highlight({ box, selected }: { box: Box; selected?: boolean }) {
 }
 
 function Badge({ box, letter }: { box: Box; letter: string }) {
-  const [dx, dy] = BADGE_NUDGE[letter] ?? [0, 0];
+  const { nudge } = useContext(Tune);
+  const [dx, dy] = [letter === 'B' ? nudge.badgeBX : 0, nudge.badgeY];
   return (
     <motion.div
       initial={{ scale: 0.6, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.6, opacity: 0 }} transition={{ duration: 0.16, ease: 'easeOut' }}
@@ -249,13 +368,17 @@ function Toolbar({ mode, capturing }: { mode: Mode; capturing: boolean }) {
   const rule = <span style={{ width: 1, height: 12, background: BORDER, margin: '0 3px' }} />;
   return (
     <div style={{
-      position: 'absolute', left: 210, top: 40, height: 32, padding: '0 5px', display: 'flex', alignItems: 'center',
+      position: 'absolute', left: TOOLBAR_X, top: 40, height: 32, padding: '0 5px', display: 'flex', alignItems: 'center',
       background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 16, boxShadow: SHADOW, color: '#737373',
     }}>
       <span style={{ ...slot, width: 20, color: '#000' }}>
         <svg width="11" height="11" viewBox="0 0 256 256"><path d="M 256 256 L 128 256 L 0 128 L 128 128 Z M 256 128 L 128 128 L 0 0 L 128 0 Z" fill="currentColor" /></svg>
       </span>
       {rule}
+      {/* Browse: no tool, the page works as usual and the marks stay */}
+      <span style={{ ...slot, marginRight: 2 }}>
+        <svg {...ICON}><path d="M18 11V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2" /><path d="M14 10V4a2 2 0 0 0-2-2a2 2 0 0 0-2 2v2" /><path d="M10 10.5V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2v8" /><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15" /></svg>
+      </span>
       {MODES.map((m) => (
         <span key={m} style={{
           ...slot, marginRight: 2,
@@ -275,22 +398,49 @@ function Toolbar({ mode, capturing }: { mode: Mode; capturing: boolean }) {
   );
 }
 
-/** The Annotate options card: tool tabs with the sliding pill, and colour swatches. */
-function Tray({ tool, colour }: { tool: Tool; colour: string }) {
-  const idx = TOOLS.indexOf(tool);
+/**
+ * A row of tabs with the pill that slides to the active one. Labels are nudged down to where
+ * their capitals are centred (see HERO_TUNING.nudge): `caps` is for labels made only of capitals.
+ */
+function TabRow({ items, active, height, caps = false }: { items: readonly string[]; active: number; height: number; caps?: boolean }) {
+  const { nudge } = useContext(Tune);
+  const n = items.length;
+  return (
+    <div style={{ position: 'relative', flex: 1, display: 'grid', gridTemplateColumns: `repeat(${n}, 1fr)`, height, background: 'rgba(0,0,0,0.05)', borderRadius: 5, padding: 1.5, boxSizing: 'border-box' }}>
+      <div style={{ position: 'absolute', top: 1.5, bottom: 1.5, width: `calc((100% - 3px) / ${n})`, left: `calc(1.5px + ${active} * ((100% - 3px) / ${n}))`, background: '#fff', borderRadius: 4, boxShadow: '0 1px 2px rgba(0,0,0,0.08)', transition: 'left 0.22s cubic-bezier(0.4, 0, 0.2, 1)' }} />
+      {items.map((label, i) => (
+        <span key={label} style={{ position: 'relative', zIndex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 7.5, fontWeight: 500, lineHeight: 1, color: i === active ? '#000' : '#737373', transition: 'color 0.22s ease' }}>
+          <span style={{ display: 'inline-block', transform: `translateY(${caps ? nudge.caps : nudge.tab}px)` }}>{label}</span>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+/** Rows that belong to one tool: they open under the tabs while it is the tool. */
+function TrayRows({ show, children }: { show: boolean; children: ReactNode }) {
+  return (
+    <div style={{ display: 'grid', gridTemplateRows: show ? '1fr' : '0fr', transition: 'grid-template-rows 0.2s cubic-bezier(0.25, 0.46, 0.45, 0.94)' }}>
+      <div style={{ overflow: 'hidden', minHeight: 0 }}><div style={{ paddingTop: 1 }}>{children}</div></div>
+    </div>
+  );
+}
+
+/**
+ * The Annotate options card: the colour everything is drawn in, the tool tabs, and under them
+ * the settings of the tool that is on (note size and font, arrow ends, pen width).
+ */
+function Tray({ tool, colour, arrowStart }: { tool: Tool; colour: string; arrowStart: ArrowEnd }) {
+  const TAB_NUDGE = useContext(Tune).nudge.tab;
+  const sub: CSSProperties = { display: 'flex', alignItems: 'center', marginTop: SUB_GAP };
+  const endLabel: CSSProperties = { width: END_LABEL_W, flexShrink: 0, fontSize: 7.5, lineHeight: 1, color: '#737373' };
   return (
     <motion.div
       initial={{ opacity: 0, y: TRAY.y - 4, scale: 0.98 }} animate={{ opacity: 1, y: TRAY.y, scale: 1 }} exit={{ opacity: 0, y: TRAY.y - 4, scale: 0.98, transition: { duration: 0.12 } }}
       transition={{ duration: 0.16, ease: 'easeOut' }}
-      style={{ position: 'absolute', left: TRAY.x, top: 0, width: TRAY.w, height: TRAY.h, boxSizing: 'border-box', padding: 8, background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 10, boxShadow: SHADOW, transformOrigin: 'top right' }}
+      style={{ position: 'absolute', left: TRAY.x, top: 0, width: TRAY.w, boxSizing: 'border-box', padding: 8, background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 10, boxShadow: SHADOW, transformOrigin: 'top right' }}
     >
-      <div style={{ position: 'relative', display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', height: 18, background: 'rgba(0,0,0,0.05)', borderRadius: 5, padding: 1.5, boxSizing: 'border-box' }}>
-        <div style={{ position: 'absolute', top: 1.5, bottom: 1.5, width: `calc((100% - 3px) / 4)`, left: `calc(1.5px + ${idx} * ((100% - 3px) / 4))`, background: '#fff', borderRadius: 4, boxShadow: '0 1px 2px rgba(0,0,0,0.08)', transition: 'left 0.22s cubic-bezier(0.4, 0, 0.2, 1)' }} />
-        {TOOLS.map((t) => (
-          <span key={t} style={{ position: 'relative', transform: `translateY(${TAB_NUDGE}px)`, zIndex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 7.5, fontWeight: 500, lineHeight: 1, color: t === tool ? '#000' : '#737373', transition: 'color 0.22s ease' }}>{TOOL_LABEL[t]}</span>
-        ))}
-      </div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', padding: '0 2px', marginTop: 8 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', padding: '0 2px', height: SWATCH_ROW }}>
         {SWATCHES.map((c) => (
           <span key={c} style={{ position: 'relative', width: 12, height: 12 }}>
             <span style={{ position: 'absolute', inset: 0, borderRadius: '50%', background: c, transform: 'scale(1.25)', opacity: c === colour ? 1 : 0, transition: 'opacity 0.2s ease' }} />
@@ -299,11 +449,75 @@ function Tray({ tool, colour }: { tool: Tool; colour: string }) {
           </span>
         ))}
       </div>
+      <div style={{ display: 'flex', marginTop: ROW_GAP }}>
+        <TabRow items={TOOLS.map((t) => TOOL_LABEL[t])} active={TOOLS.indexOf(tool)} height={TAB_ROW} />
+      </div>
+
+      <TrayRows show={tool === 'note'}>
+        <div style={sub}><TabRow items={['S', 'M', 'L', 'XL']} active={1} height={SUB_ROW} caps /></div>
+        <div style={sub}><TabRow items={['Hand', 'Marker', 'Neat', 'Script']} active={0} height={SUB_ROW} /></div>
+      </TrayRows>
+      <TrayRows show={tool === 'arrow'}>
+        <div style={sub}>
+          <span style={endLabel}><span style={{ display: 'inline-block', transform: `translateY(${TAB_NUDGE}px)` }}>Start</span></span>
+          <TabRow items={ARROW_ENDS} active={ARROW_ENDS.indexOf(arrowStart)} height={SUB_ROW} />
+        </div>
+        <div style={sub}>
+          <span style={endLabel}><span style={{ display: 'inline-block', transform: `translateY(${TAB_NUDGE}px)` }}>End</span></span>
+          <TabRow items={ARROW_ENDS} active={1} height={SUB_ROW} />
+        </div>
+      </TrayRows>
+      <TrayRows show={tool === 'pen'}>
+        <div style={sub}><TabRow items={['S', 'M', 'L', 'XL']} active={1} height={SUB_ROW} caps /></div>
+      </TrayRows>
     </motion.div>
   );
 }
 
-function CursorGlyph({ kind }: { kind: CursorKind }) {
+/** Padding of a clicked card, drawn on it as Inspect's spacing setting does: a green band with each side's size. */
+function PaddingBands({ box, pad }: { box: Box; pad: number }) {
+  // Inside the 1px border.
+  const o = { l: box.x + 1, t: box.y + 1, r: box.x + box.w - 1, b: box.y + box.h - 1 };
+  const i = { l: o.l + pad, t: o.t + pad, r: o.r - pad, b: o.b - pad };
+  const rect = (e: typeof o): string => `M${e.l} ${e.t}H${e.r}V${e.b}H${e.l}Z`;
+  const cx = (o.l + o.r) / 2;
+  const cy = (o.t + o.b) / 2;
+  const label = (x: number, y: number): ReactNode => (
+    <g>
+      <rect x={x - 7} y={y - 5} width="14" height="10" rx="3" fill="rgba(255,255,255,0.94)" />
+      <text x={x} y={y + 2.7} textAnchor="middle" fill="rgb(22, 163, 74)" fontFamily={MONO} fontSize="7.5" fontWeight="500">{pad}</text>
+    </g>
+  );
+  return (
+    <motion.svg
+      width={W} height={H} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.15 }}
+      style={{ position: 'absolute', left: 0, top: 0, overflow: 'visible' }}
+    >
+      <path d={rect(o) + rect(i)} fillRule="evenodd" fill="rgba(22, 163, 74, 0.22)" />
+      {label(cx, (o.t + i.t) / 2)}{label(cx, (o.b + i.b) / 2)}{label((o.l + i.l) / 2, cy)}{label((o.r + i.r) / 2, cy)}
+    </motion.svg>
+  );
+}
+
+/** The distance between two guides: a capped line across the gap and the value in a pill beside it. */
+function GapMark({ gap, colour }: { gap: Gap; colour: string }) {
+  const horizontal = gap.y1 === gap.y2;
+  const w = gap.label.length * 5.4 + 9;
+  const caps = horizontal ? `M${gap.x1} ${gap.y1 - 3.5}v7M${gap.x2} ${gap.y2 - 3.5}v7` : `M${gap.x1 - 3.5} ${gap.y1}h7M${gap.x2 - 3.5} ${gap.y2}h7`;
+  return (
+    <motion.svg
+      width={W} height={H} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0, transition: { duration: 0.08 } }} transition={{ duration: 0.15 }}
+      style={{ position: 'absolute', left: 0, top: 0, overflow: 'visible' }}
+    >
+      <path d={`M${gap.x1} ${gap.y1}L${gap.x2} ${gap.y2}${caps}`} stroke={colour} strokeOpacity="0.85" strokeWidth="1.5" strokeLinecap="round" fill="none" />
+      <rect x={gap.at.x - w / 2} y={gap.at.y - 7} width={w} height="14" rx="4" fill={colour} />
+      <text x={gap.at.x} y={gap.at.y + 3.2} textAnchor="middle" fill="#fff" fontFamily={MONO} fontSize="9" fontWeight="500">{gap.label}</text>
+    </motion.svg>
+  );
+}
+
+/** Raval's own marks are drawn in the colour everything else is; the arrow and I-beam are the system's. */
+function CursorGlyph({ kind, colour }: { kind: CursorKind; colour: string }) {
   const centred: CSSProperties = { display: 'block', overflow: 'visible', marginLeft: -9, marginTop: -9 };
   if (kind === 'pointer') {
     return <svg width="16" height="18" viewBox="0 0 16 18" style={{ display: 'block' }}><path d="M1.5 1.2v13.2l3.6-3.3 2.3 5.3 2.2-.95-2.3-5.25h4.9L1.5 1.2z" fill="#000" stroke="#fff" strokeWidth="1.2" strokeLinejoin="round" /></svg>;
@@ -313,24 +527,24 @@ function CursorGlyph({ kind }: { kind: CursorKind }) {
   }
   if (kind === 'pen') {
     const d = 'M0 0L1.3 -4.4L10.2 -13.3a1.9 1.9 0 0 1 2.7 0l0.4 0.4a1.9 1.9 0 0 1 0 2.7L4.4 -1.3Z';
-    return <svg width="18" height="18" viewBox="-9 -9 18 18" style={centred} strokeLinejoin="round" strokeLinecap="round"><path d={d} fill="#fff" stroke="#fff" strokeWidth="4" /><path d={d} fill="#fff" stroke={ACCENT} strokeWidth="1.5" /></svg>;
+    return <svg width="18" height="18" viewBox="-9 -9 18 18" style={centred} strokeLinejoin="round" strokeLinecap="round"><path d={d} fill="#fff" stroke="#fff" strokeWidth="4" /><path d={d} fill="#fff" stroke={colour} strokeWidth="1.5" /></svg>;
   }
   if (kind === 'remove' || kind === 'delete') {
     return (
       <svg width="18" height="18" viewBox="-9 -9 18 18" style={centred}>
-        <circle r="8" fill={ACCENT} stroke="#fff" strokeWidth="1.5" />
+        <circle r="8" fill={colour} stroke="#fff" strokeWidth="1.5" />
         <path d={kind === 'remove' ? 'M-3.5 0H3.5' : 'M-2.75 -2.75L2.75 2.75M2.75 -2.75L-2.75 2.75'} stroke="#fff" strokeWidth="1.6" strokeLinecap="round" />
       </svg>
     );
   }
   if (kind === 'move') {
     const d = 'M0 -8V8M-3.2 -4.8L0 -8L3.2 -4.8M-3.2 4.8L0 8L3.2 4.8';
-    return <svg width="18" height="18" viewBox="-9 -9 18 18" style={centred} fill="none" strokeLinecap="round" strokeLinejoin="round"><path d={d} stroke="#fff" strokeWidth="4.2" /><path d={d} stroke={ACCENT} strokeWidth="1.6" /></svg>;
+    return <svg width="18" height="18" viewBox="-9 -9 18 18" style={centred} fill="none" strokeLinecap="round" strokeLinejoin="round"><path d={d} stroke="#fff" strokeWidth="4.2" /><path d={d} stroke={colour} strokeWidth="1.6" /></svg>;
   }
   if (kind === 'grab') {
-    return <svg width="18" height="18" viewBox="-9 -9 18 18" style={centred}><circle r="6" fill="#fff" /><circle r="4.6" fill="#fff" stroke={ACCENT} strokeWidth="1.6" /></svg>;
+    return <svg width="18" height="18" viewBox="-9 -9 18 18" style={centred}><circle r="6" fill="#fff" /><circle r="4.6" fill="#fff" stroke={colour} strokeWidth="1.6" /></svg>;
   }
-  return <svg width="18" height="18" viewBox="-9 -9 18 18" style={centred} stroke={ACCENT} strokeWidth="1.5" strokeLinecap="round" fill="none"><path d="M-9 0h5M4 0h5M0 -9v5M0 4v5" /><circle r="2.5" /></svg>;
+  return <svg width="18" height="18" viewBox="-9 -9 18 18" style={centred} stroke={colour} strokeWidth="1.5" strokeLinecap="round" fill="none"><path d="M-9 0h5M4 0h5M0 -9v5M0 4v5" /><circle r="2.5" /></svg>;
 }
 
 function PanelRow({ label, value, swatch }: { label: string; value: string; swatch?: string }) {
@@ -401,9 +615,20 @@ class Cancelled extends Error {}
 export type DemoScene = 'inspect' | 'measure' | 'guides' | 'annotate' | 'screenshot';
 const ALL_SCENES: DemoScene[] = ['inspect', 'measure', 'guides', 'annotate', 'screenshot'];
 
-/** `scenes` plays only part of the script, in the usual order; the homepage plays all of it. */
-export function HeroDemo({ scenes = ALL_SCENES }: { scenes?: DemoScene[] }) {
+/**
+ * `scenes` plays only part of the script, in the usual order; the homepage plays all of it.
+ * `tuning` and `paused` are for the development tuning panel: settings laid over the shipped
+ * ones (changing them restarts the script), and a hold on the clock.
+ */
+export function HeroDemo({ scenes = ALL_SCENES, tuning, paused = false }: { scenes?: DemoScene[]; tuning?: HeroTuningPatch; paused?: boolean }) {
   const reduce = useReducedMotion();
+  const T = useMemo(() => mergeTuning(tuning), [tuning]);
+  const PACE = T.pace;
+  const NOTE_AT = T.note;
+  const NOTE_HANDLE = { x: NOTE_AT.x + NOTE_SIZE.w / 2, y: NOTE_AT.y - 11 };
+  const INK = useMemo(() => inkSamples(T.ink), [T]);
+  const hold = useRef(paused);
+  hold.current = paused;
   const wrap = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(W);
   // Where the window sits on the stage when it is too narrow to show all of it.
@@ -442,12 +667,13 @@ export function HeroDemo({ scenes = ALL_SCENES }: { scenes?: DemoScene[] }) {
       while (left > 0) {
         await new Promise((r) => setTimeout(r, 30));
         if (cancelled) throw new Cancelled();
-        if (visible.current && document.visibilityState === 'visible') left -= 30;
+        if (!hold.current && visible.current && document.visibilityState === 'visible') left -= 30;
       }
     };
     const move = async (x: number, y: number, dur: number, kind: CursorKind = 'crosshair'): Promise<void> => {
-      setF((prev) => ({ ...prev, cursor: { x, y, kind, dur: dur * PACE } }));
-      await wait(dur * 1000);
+      const took = dur * T.travel;
+      setF((prev) => ({ ...prev, cursor: { x, y, kind, dur: took * PACE } }));
+      await wait(took * 1000);
     };
     const look = (kind: CursorKind): void => setF((prev) => ({ ...prev, cursor: { ...prev.cursor, kind, dur: 0 } }));
     const click = async (): Promise<void> => {
@@ -481,7 +707,7 @@ export function HeroDemo({ scenes = ALL_SCENES }: { scenes?: DemoScene[] }) {
       for (;;) {
         // Counts the loops on the element, so a recording can start and stop on a loop boundary.
         wrap.current?.setAttribute('data-loop', String(++loops));
-        setF(START);
+        setF({ ...START, noteAngle: T.note.tilt });
         await wait(500);
 
         // ── Inspect ────────────────────────────────────────────────────────────
@@ -490,7 +716,15 @@ export function HeroDemo({ scenes = ALL_SCENES }: { scenes?: DemoScene[] }) {
         await hoverOn(CARD_C, 0.5);
         await wait(300);
         await hoverOn(CARD_B, 0.45);
-        await wait(250);
+        await wait(350);
+        // Spacing on (the B key), then a click: the card's padding is drawn on it.
+        toast('Spacing on');
+        await wait(450);
+        await click();
+        patch({ hover: null, spacing: true });
+        await wait(T.hold.spacing * 1000);
+        patch({ spacing: false });
+        await wait(150);
         await hoverOn(HEADING, 0.5, { x: 60, y: 18 });
         await wait(450);
         // Down to a word. The highlight stays on the heading until the pointer is on the word,
@@ -504,14 +738,14 @@ export function HeroDemo({ scenes = ALL_SCENES }: { scenes?: DemoScene[] }) {
         await wait(300);
         await click();
         patch({ wordSelected: true, panel: 'type' });
-        await wait(1500);
+        await wait(T.hold.typography * 1000);
         // Open another section: the first closes, so the panel stays short.
         await move(COLOURS_HEADER.x, COLOURS_HEADER.y, 0.45, 'pointer');
         patch({ wordHover: false });
         await wait(120);
         await click();
         patch({ panel: 'colours' });
-        await wait(1500);
+        await wait(T.hold.colours * 1000);
 
         }
         // ── Measure ────────────────────────────────────────────────────────────
@@ -529,13 +763,13 @@ export function HeroDemo({ scenes = ALL_SCENES }: { scenes?: DemoScene[] }) {
         await hoverOn(CARD_C, 0.5, { x: 70, y: 150 });
         await click();
         patch({ pins: ['a', 'b', 'c'], hover: null, lines: [lineAB, lineBC] });
-        await wait(1000);
+        await wait(T.hold.measured * 1000);
         // Leave and come back: over a pinned element the cursor is a minus, and its size shows.
         await move(520, 352, 0.4);
         await wait(200);
         await move(CARD_C.x + 70, CARD_C.y + 130, 0.4, 'remove');
         patch({ hover: CARD_C });
-        await wait(800);
+        await wait(T.hold.unpinHover * 1000);
         await click();
         // Unpinned: its line draws back into the element it came from.
         patch({ pins: ['a', 'b'], lines: [lineAB], hover: null });
@@ -556,22 +790,48 @@ export function HeroDemo({ scenes = ALL_SCENES }: { scenes?: DemoScene[] }) {
         await click();
         patch({ guideV: CARD_A.x, guideH: { y: CARD_A.y, dur: 0, strong: false }, preview: null });
         await wait(300);
-        // Move off, then return to the guide: delete cursor, and a hint about what a click or a drag does.
-        patch({ preview: { snapped: false } });
-        await move(330, 150, 0.45);
-        await wait(150);
-        await move(330, CARD_A.y, 0.35);
-        patch({ preview: null, hint: 'Click to delete · Drag to move', guideH: { y: CARD_A.y, dur: 0, strong: true } });
-        look('delete');
-        await wait(1000);
-        // Drag it down; it catches the bottom edge of the cards.
+        // A second pair on the far corner of the next card, so the two cards are boxed in.
+        const right = CARD_B.x + CARD_B.w;
         const bottom = CARD_A.y + CARD_A.h;
-        // One continuous drag: the guide and the cursor travel together and stop on the edge.
-        patch({ hint: null, guideH: { y: bottom, dur: 0.85 * PACE, strong: true } });
-        await move(330, bottom, 0.85, 'move');
-        await wait(500);
-        patch({ guideH: { y: bottom, dur: 0, strong: false } });
+        patch({ preview: { snapped: false } });
+        await move(right, bottom, 0.7);
+        patch({ preview: { snapped: true } });
+        await wait(450);
+        await click();
+        patch({ guideV2: right, guideH2: bottom, preview: null });
+        await wait(250);
+        // Rest between them: the distance across and the distance down.
+        const rest = { x: 228, y: 264 };
+        patch({ preview: { snapped: false } });
+        await move(rest.x, rest.y, 0.5);
+        patch({ gaps: [
+          { x1: CARD_A.x, y1: rest.y, x2: right, y2: rest.y, label: `${right - CARD_A.x}px`, at: { x: 300, y: rest.y + 14 } },
+          { x1: rest.x, y1: CARD_A.y, x2: rest.x, y2: bottom, label: `${bottom - CARD_A.y}px`, at: { x: rest.x - 24, y: 232 } },
+        ] });
+        await wait(T.hold.gaps * 1000);
+        // Onto the first guide: delete cursor, a hint about what a click or a drag does, and how far its neighbour is.
+        patch({ gaps: [] });
+        await move(330, CARD_A.y, 0.4);
+        patch({
+          preview: null, hint: 'Click to delete · Drag to move', guideH: { y: CARD_A.y, dur: 0, strong: true },
+          gaps: [{ x1: 330, y1: CARD_A.y, x2: 330, y2: bottom, label: `${bottom - CARD_A.y}px`, at: { x: 357, y: 266 } }],
+        });
         look('delete');
+        await wait(T.hold.guideHint * 1000);
+        // Drag it up; it catches the top edge of the tall block, and the gap is measured again.
+        // One continuous drag: the guide and the cursor travel together and stop on the edge.
+        patch({ hint: null, gaps: [], guideH: { y: CARD_C.y, dur: 0.85 * PACE, strong: true } });
+        await move(330, CARD_C.y, 0.85, 'move');
+        await wait(150);
+        patch({ gaps: [{ x1: 330, y1: CARD_C.y, x2: 330, y2: bottom, label: `${bottom - CARD_C.y}px`, at: { x: 358, y: 184 } }] });
+        await wait(T.hold.gapAfterDrag * 1000);
+        patch({ guideH: { y: CARD_C.y, dur: 0, strong: false }, gaps: [] });
+        look('delete');
+        await wait(350);
+        // Away from any guide, Delete clears them all.
+        await move(330, 160, 0.3);
+        patch({ guideV: null, guideH: null, guideV2: null, guideH2: null });
+        toast('Guides cleared');
         await wait(500);
 
         }
@@ -583,12 +843,17 @@ export function HeroDemo({ scenes = ALL_SCENES }: { scenes?: DemoScene[] }) {
         await hoverOn(CARD_B, 0.45);
         await click();
         patch({ sizeMark: true, hover: null });
-        await wait(600);
+        await wait(T.hold.callout * 1000);
         // Arrow tool: draw, then grab the middle and bend it
         await move(toolBtn('arrow').x, toolBtn('arrow').y, 0.4, 'pointer');
         await click();
         patch({ tool: 'arrow' });
-        await wait(250);
+        await wait(350);
+        // Its ends are a choice: give the tail a dot.
+        await move(endBtn(0, 'Dot').x, endBtn(0, 'Dot').y, 0.35, 'pointer');
+        await click();
+        patch({ arrowStart: 'Dot' });
+        await wait(300);
         await move(ARROW_FROM.x, ARROW_FROM.y, 0.5);
         await wait(120);
         patch({ arrow: 'straight' });
@@ -599,7 +864,7 @@ export function HeroDemo({ scenes = ALL_SCENES }: { scenes?: DemoScene[] }) {
         await wait(350);
         patch({ arrow: 'bent' });
         await move(ARROW_BEND.x, ARROW_BEND.y, 0.4, 'grab');
-        await wait(450);
+        await wait(T.hold.arrowBent * 1000);
         // Note tool, in another colour
         patch({ arrowHandles: false });
         await move(toolBtn('note').x, toolBtn('note').y, 0.45, 'pointer');
@@ -610,13 +875,36 @@ export function HeroDemo({ scenes = ALL_SCENES }: { scenes?: DemoScene[] }) {
         await click();
         patch({ colour: BLUE });
         await wait(300);
-        await move(504, 372, 0.45, 'text');
+        await move(NOTE_AT.x - 4, NOTE_AT.y + NOTE_SIZE.h, 0.45, 'text');
         await click();
         for (let i = 1; i <= NOTE_TEXT.length; i++) {
           patch({ note: NOTE_TEXT.slice(0, i) });
-          await wait(50);
+          await wait(T.typing);
         }
-        await wait(500);
+        await wait(T.hold.noteTyped * 1000);
+        // Saved. Point at it and it is outlined, with a handle above it: drag the handle to turn the note.
+        await move(NOTE_AT.x + NOTE_SIZE.w / 2, NOTE_AT.y + NOTE_SIZE.h / 2, 0.3, 'grab');
+        patch({ noteActive: true });
+        await wait(300);
+        await move(NOTE_HANDLE.x, NOTE_HANDLE.y, 0.3, 'grab');
+        await wait(200);
+        patch({ noteAngle: T.note.turned });
+        await move(NOTE_HANDLE.x - 3, NOTE_HANDLE.y + 1, 0.5, 'grab');
+        await wait(T.hold.noteTurned * 1000);
+        patch({ noteActive: false });
+        // Pen: ink that is fuller where the hand is slow and thinner where it is quick.
+        await move(toolBtn('pen').x, toolBtn('pen').y, 0.45, 'pointer');
+        await click();
+        patch({ tool: 'pen' });
+        await wait(250);
+        await move(INK[0]!.x, INK[0]!.y, 0.5, 'pen');
+        await wait(150);
+        for (let i = 1; i <= INK.length; i++) {
+          const at = INK[i - 1]!;
+          setF((prev) => ({ ...prev, ink: i, cursor: { x: at.x, y: at.y, kind: 'pen', dur: 0 } }));
+          await wait(T.inkStep);
+        }
+        await wait(T.hold.ink * 1000);
 
         }
         // ── Screenshot: drag out a region ───────────────────────────────────────
@@ -637,7 +925,7 @@ export function HeroDemo({ scenes = ALL_SCENES }: { scenes?: DemoScene[] }) {
         setF((prev) => ({ ...prev, flash: prev.flash + 1, region: null, capturing: false }));
         await wait(250);
         toast('Screenshot saved', true);
-        await wait(2200);
+        await wait(T.hold.saved * 1000);
         }
 
         patch({ fading: true });
@@ -647,9 +935,11 @@ export function HeroDemo({ scenes = ALL_SCENES }: { scenes?: DemoScene[] }) {
 
     run().catch((err) => { if (!(err instanceof Cancelled)) throw err; });
     return () => { cancelled = true; };
-  }, [reduce, sceneKey]);
+    // `T` holds everything tunable the script reads; `PACE`, the note and the ink come from it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reduce, sceneKey, T]);
 
-  const onControls = f.cursor.y < 80 || (f.mode === 'annotate' && f.cursor.y < TRAY.y + TRAY.h && f.cursor.x > TRAY.x && f.cursor.x < TRAY.x + TRAY.w);
+  const onControls = f.cursor.y < 80 || (f.mode === 'annotate' && f.cursor.y < TRAY.y + trayHeight(f.tool) && f.cursor.x > TRAY.x && f.cursor.x < TRAY.x + TRAY.w);
   // The curve's control point: on the line while straight, pulled out so the curve passes through the bend handle.
   const arrowCtrl = f.arrow === 'bent' ? { x: 2 * ARROW_BEND.x - ARROW_MID.x, y: 2 * ARROW_BEND.y - ARROW_MID.y } : ARROW_MID;
   const arrowPath = `M${ARROW_FROM.x} ${ARROW_FROM.y} Q${arrowCtrl.x} ${arrowCtrl.y} ${ARROW_TO.x} ${ARROW_TO.y}`;
@@ -658,7 +948,7 @@ export function HeroDemo({ scenes = ALL_SCENES }: { scenes?: DemoScene[] }) {
   const wing = (spread: number): string => `${(ARROW_TO.x + 10 * Math.cos(arrowBack + spread)).toFixed(2)} ${(ARROW_TO.y + 10 * Math.sin(arrowBack + spread)).toFixed(2)}`;
   const arrowHead = `M${wing(-0.5)} L${ARROW_TO.x} ${ARROW_TO.y} L${wing(0.5)}`;
   const guideLine = (axis: 'h' | 'v', strong: boolean, at = 0): CSSProperties => ({
-    position: 'absolute', background: ACCENT, opacity: strong ? 0.85 : 0.5, transition: 'opacity 0.15s ease',
+    position: 'absolute', background: f.colour, opacity: strong ? 0.85 : 0.5, transition: 'opacity 0.15s ease',
     ...(axis === 'h' ? { left: 0, right: 0, top: at, height: 1 } : { top: 28, bottom: 0, left: at, width: 1 }),
   });
   const previewAt = f.preview?.at ?? { x: f.cursor.x, y: f.cursor.y };
@@ -667,7 +957,9 @@ export function HeroDemo({ scenes = ALL_SCENES }: { scenes?: DemoScene[] }) {
   // When a click turns the hovered element into a pinned or marked one, the hover highlight
   // goes at once: the new highlight is already drawn in the same place.
   if (f.hover) lastHover.current = f.hover;
-  const hoverReplaced = !f.hover && !!lastHover.current && (f.pins.some((p) => BOXES[p] === lastHover.current) || (f.sizeMark && lastHover.current === CARD_B));
+  const hoverReplaced = !f.hover && !!lastHover.current && (f.pins.some((p) => BOXES[p] === lastHover.current) || ((f.sizeMark || f.spacing) && lastHover.current === CARD_B));
+  // Only Inspect reads corners: it outlines along them and adds the radius to the size.
+  const hoverRadius = f.mode === 'inspect' && f.hover ? RADIUS_OF.get(f.hover) : undefined;
   const hoverIsPinned = !!f.hover && f.pins.some((p) => BOXES[p] === f.hover);
   const textColour = dark ? '#a3a3a3' : '#5c5c5c';
 
@@ -685,7 +977,7 @@ export function HeroDemo({ scenes = ALL_SCENES }: { scenes?: DemoScene[] }) {
     <div
       ref={wrap}
       role="img"
-      aria-label="Animated simulation of Raval in a browser window: inspecting elements and a word, reading its typography and colours, measuring gaps between cards and unpinning one, placing a guide that snaps to edges and dragging it, annotating with a size callout, an arrow and a note, and dragging out a region to save as a screenshot."
+      aria-label="Animated simulation of Raval in a browser window: inspecting elements and a word, reading its typography and colours, reading a card's corner radius and padding, measuring gaps between cards and unpinning one, placing guides that snap to edges, reading the distance between them and dragging one, annotating with a size callout, an arrow, a note that is turned and a pen stroke, and dragging out a region to save as a screenshot."
       // The interactive demo should not treat this picture as part of the page.
       data-demo-ui="true"
       style={{
@@ -695,6 +987,7 @@ export function HeroDemo({ scenes = ALL_SCENES }: { scenes?: DemoScene[] }) {
         userSelect: 'none', pointerEvents: 'none',
       }}
     >
+      <Tune.Provider value={T}>
       <div aria-hidden="true" style={{ position: 'absolute', left: 0, top: 0, width: view, height: H, transform: `scale(${scale})`, transformOrigin: '0 0', fontFamily: SANS,
         // The stage sets its own type; it must not pick up the page's body size, leading or tracking.
         fontSize: 16, lineHeight: 1.5, letterSpacing: 'normal', textAlign: 'left',
@@ -739,6 +1032,8 @@ export function HeroDemo({ scenes = ALL_SCENES }: { scenes?: DemoScene[] }) {
 
           {/* Guides */}
           {f.guideV !== null && <div style={guideLine('v', false, f.guideV)} />}
+          {f.guideV2 !== null && <div style={guideLine('v', false, f.guideV2)} />}
+          {f.guideH2 !== null && <div style={guideLine('h', false, f.guideH2)} />}
           {f.guideH && (
             <motion.div initial={false} animate={{ y: f.guideH.y }} transition={{ duration: f.guideH.dur, ease: EASE }} style={guideLine('h', f.guideH.strong) as MotionStyle} />
           )}
@@ -746,6 +1041,10 @@ export function HeroDemo({ scenes = ALL_SCENES }: { scenes?: DemoScene[] }) {
               that was created at its destination would sit there waiting for the cursor to arrive. */}
           <motion.div initial={false} animate={{ y: previewAt.y }} transition={{ duration: f.cursor.dur, ease: EASE }} style={{ ...guideLine('h', !!f.preview?.snapped), opacity: previewOpacity } as MotionStyle} />
           <motion.div initial={false} animate={{ x: previewAt.x }} transition={{ duration: f.cursor.dur, ease: EASE }} style={{ ...guideLine('v', !!f.preview?.snapped), opacity: previewOpacity } as MotionStyle} />
+          {/* The distance between guides, where the pointer rests or from the guide it is on */}
+          <AnimatePresence>
+            {f.gaps.map((g) => <GapMark key={`${g.x1}-${g.y1}-${g.x2}-${g.y2}`} gap={g} colour={f.colour} />)}
+          </AnimatePresence>
           {f.hint && (
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.15 }} style={{ ...chip, fontFamily: SANS, color: '#737373', left: f.cursor.x + 14, top: f.cursor.y + 14 } as MotionStyle}>
               {f.hint}
@@ -764,11 +1063,18 @@ export function HeroDemo({ scenes = ALL_SCENES }: { scenes?: DemoScene[] }) {
           </AnimatePresence>
 
           {/* Hover highlight and the size of what is under the pointer */}
+          {/* Inspect, spacing on: the clicked card is outlined and its padding drawn on it */}
+          <AnimatePresence>{f.spacing && <PaddingBands key="bands" box={CARD_B} pad={CARD_PAD} />}</AnimatePresence>
+          <AnimatePresence>{f.spacing && <Highlight key="picked" box={CARD_B} selected hollow radius={CARD_RADIUS} />}</AnimatePresence>
           <AnimatePresence custom={hoverReplaced}>
-            {f.hover && !hoverIsPinned && <Highlight key="hover" box={f.hover} />}
+            {f.hover && !hoverIsPinned && <Highlight key="hover" box={f.hover} radius={hoverRadius ?? 3} />}
           </AnimatePresence>
           {/* A word has no size label of its own; the details panel reports its paragraph. */}
-          {f.hover && f.hover !== WORD && <div style={{ ...chip, left: f.hover.x + (hoverIsPinned ? 12 : 0), top: f.hover.y - 22 }}>{f.hover.w} × {f.hover.h}</div>}
+          {f.hover && f.hover !== WORD && (
+            <div style={{ ...chip, left: f.hover.x + (hoverIsPinned ? 12 : 0), top: f.hover.y - 22 }}>
+              {f.hover.w} × {f.hover.h}{hoverRadius ? ` · R ${hoverRadius}` : ''}
+            </div>
+          )}
 
           {/* Annotate */}
           {f.sizeMark && (
@@ -788,15 +1094,34 @@ export function HeroDemo({ scenes = ALL_SCENES }: { scenes?: DemoScene[] }) {
                 initial={{ opacity: 0, d: arrowHead }} animate={{ opacity: 1, d: arrowHead }}
                 transition={{ opacity: { duration: 0.1, delay: 0.42 * PACE }, d: { duration: 0.4 * PACE, ease: EASE } }}
               />
+              {/* The tail's dot is there from the first moment of the drag */}
+              {f.arrowStart === 'Dot' && <circle cx={ARROW_FROM.x} cy={ARROW_FROM.y} r="2.8" fill={ACCENT} stroke="none" />}
               {f.arrowHandles && [ARROW_FROM, ARROW_TO, f.arrow === 'bent' ? ARROW_BEND : ARROW_MID].map((p, i) => (
                 <motion.circle key={i} r={i === 2 ? 3 : 3.6} fill={i === 2 && f.arrow === 'bent' ? ACCENT : '#fff'} strokeWidth="1.3" initial={false} animate={{ cx: p.x, cy: p.y }} transition={{ duration: 0.4 * PACE, ease: EASE }} />
               ))}
             </svg>
           )}
           {f.note && (
-            <div style={{ position: 'absolute', left: 508, top: 352, color: BLUE, fontFamily: '"Caveat", "Bradley Hand", "Segoe Print", cursive', fontSize: 16, fontWeight: 600, transform: 'rotate(-1.5deg)', whiteSpace: 'nowrap', textShadow: 'var(--hd-note-shadow)' }}>
+            <motion.div
+              // Turns about its centre, so it stays where it was put.
+              initial={false} animate={{ rotate: f.noteAngle }} transition={{ duration: 0.5 * PACE, ease: EASE }}
+              style={{ position: 'absolute', left: NOTE_AT.x, top: NOTE_AT.y, color: BLUE, fontFamily: '"Caveat", "Bradley Hand", "Segoe Print", cursive', fontSize: NOTE_AT.size, fontWeight: 600, whiteSpace: 'nowrap', textShadow: 'var(--hd-note-shadow)' }}
+            >
               {f.note}
-            </div>
+              {/* Pointed at: outlined, with the handle that turns it. Drawn inside the note so they turn together. */}
+              {f.noteActive && (
+                <motion.span initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.12 }} style={{ position: 'absolute', inset: -3, border: '1px dashed rgba(37, 99, 235, 0.6)', borderRadius: 3 }}>
+                  <span style={{ position: 'absolute', left: '50%', top: -7, width: 1, height: 6, marginLeft: -0.5, background: 'rgba(37, 99, 235, 0.6)' }} />
+                  <span style={{ position: 'absolute', left: '50%', top: -14, width: 7, height: 7, marginLeft: -4.5, borderRadius: '50%', background: '#fff', border: `1.3px solid ${BLUE}` }} />
+                </motion.span>
+              )}
+            </motion.div>
+          )}
+          {f.ink > 0 && (
+            <svg width={W} height={H} style={{ position: 'absolute', left: 0, top: 0, overflow: 'visible' }}>
+              {/* A filled outline, not a stroked line; the end tapers once the pen lifts */}
+              <path d={inkPathData(INK.slice(0, f.ink), T.ink.size, f.ink >= INK.length)} fill={BLUE} />
+            </svg>
           )}
 
           {/* Inspect details */}
@@ -819,7 +1144,7 @@ export function HeroDemo({ scenes = ALL_SCENES }: { scenes?: DemoScene[] }) {
                 <PanelSection title="Colours" open={f.panel === 'colours'} summary={<span style={{ width: 8, height: 8, borderRadius: '50%', background: textColour, border: `1px solid ${BORDER}` }} />}>
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', height: 16, background: 'rgba(0,0,0,0.05)', borderRadius: 5, padding: 1.5, boxSizing: 'border-box', marginBottom: 5, fontSize: 7.5, fontWeight: 500 }}>
                     {['HEX', 'RGB', 'HSL'].map((t, i) => (
-                      <span key={t} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 4, background: i === 0 ? '#fff' : 'transparent', boxShadow: i === 0 ? '0 1px 2px rgba(0,0,0,0.08)' : 'none', color: i === 0 ? '#000' : '#737373', lineHeight: 1 }}><span style={{ display: 'inline-block', transform: `translateY(${CAPS_NUDGE}px)` }}>{t}</span></span>
+                      <span key={t} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 4, background: i === 0 ? '#fff' : 'transparent', boxShadow: i === 0 ? '0 1px 2px rgba(0,0,0,0.08)' : 'none', color: i === 0 ? '#000' : '#737373', lineHeight: 1 }}><span style={{ display: 'inline-block', transform: `translateY(${T.nudge.caps}px)` }}>{t}</span></span>
                     ))}
                   </div>
                   <PanelRow label="Color" value={textColour} swatch={textColour} />
@@ -830,7 +1155,7 @@ export function HeroDemo({ scenes = ALL_SCENES }: { scenes?: DemoScene[] }) {
           </AnimatePresence>
 
           <Toolbar mode={f.mode} capturing={f.capturing} />
-          <AnimatePresence>{f.mode === 'annotate' && <Tray key="tray" tool={f.tool} colour={f.colour} />}</AnimatePresence>
+          <AnimatePresence>{f.mode === 'annotate' && <Tray key="tray" tool={f.tool} colour={f.colour} arrowStart={f.arrowStart} />}</AnimatePresence>
 
           {/* Toast */}
           <AnimatePresence>
@@ -876,10 +1201,11 @@ export function HeroDemo({ scenes = ALL_SCENES }: { scenes?: DemoScene[] }) {
                 style={{ position: 'absolute', left: -9, top: -9, width: 18, height: 18, borderRadius: '50%', border: `1.5px solid ${ACCENT}`, boxSizing: 'border-box' }}
               />
             )}
-            <CursorGlyph kind={onControls ? 'pointer' : f.cursor.kind} />
+            <CursorGlyph kind={onControls ? 'pointer' : f.cursor.kind} colour={f.colour} />
           </motion.div>
         </motion.div>
       </div>
+      </Tune.Provider>
     </div>
   );
 }

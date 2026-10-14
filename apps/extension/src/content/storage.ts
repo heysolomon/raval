@@ -68,6 +68,23 @@ export function savePanelPosition(pos: PanelPosition): void {
   void chrome.storage.local.set({ [KEY_PANEL_POS]: pos });
 }
 
+// ─── Mark colour ──────────────────────────────────────────────────────────────
+
+const KEY_MARK_COLOR = 'raval_mark_color';
+
+export function loadMarkColor(): Promise<string | null> {
+  return new Promise((resolve) => {
+    chrome.storage.local.get(KEY_MARK_COLOR, (result) => {
+      const hex = result[KEY_MARK_COLOR] as unknown;
+      resolve(typeof hex === 'string' ? hex : null);
+    });
+  });
+}
+
+export function saveMarkColor(hex: string): void {
+  void chrome.storage.local.set({ [KEY_MARK_COLOR]: hex });
+}
+
 // ─── Settings ─────────────────────────────────────────────────────────────────
 
 export function loadSettings(): Promise<Settings> {

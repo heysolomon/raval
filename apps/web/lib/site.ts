@@ -7,7 +7,7 @@ export const SITE_NAME = 'Raval';
 /** The name the product was listed under before October 2026. People still search for it. */
 export const FORMER_NAME = 'Calipers';
 /** Shown in the footer and in structured data. Keep in step with the extension's manifest. */
-export const SITE_VERSION = '0.3.2';
+export const SITE_VERSION = '0.4.0';
 
 // The tagline is the homepage's headline and the second half of its title, so
 // the words people search for are in both.

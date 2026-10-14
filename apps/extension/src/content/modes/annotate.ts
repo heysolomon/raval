@@ -10,27 +10,15 @@ import { clearCanvas, drawRulers, drawElementHighlight } from '../renderer';
 import { isRavalElement, uid, toPageX, toPageY, toViewX, toViewY } from '../utils';
 import { showToast } from '../labels';
 import { BoxSpring, boxToRect } from '../motion';
-import { setSegmented, setSwatches } from '../tokens';
+import { setSegmented } from '../tokens';
 import { onPageChange, createPageShelf } from '../page-scope';
 import { hoverSuppressed } from '../pointer';
 import { setCursorResolver, refreshCursor } from '../cursor';
 import { addRenderer, markActive } from '../frame';
+import { inkPath } from '../ink';
+import { getMarkColor, markRgba, onMarkColor, onMarkColorChange } from '../mark-color';
 
 export type AnnotateTool = 'measure' | 'note' | 'arrow' | 'pen';
-
-/** Palette — first entry is the design-system primary / accent. */
-export const ANNOTATE_COLORS = [
-  { id: 'accent',  hex: '#FF4500', label: 'Accent'  },
-  { id: 'pink',    hex: '#FF2D85', label: 'Pink'    },
-  { id: 'blue',    hex: '#2563EB', label: 'Blue'    },
-  { id: 'green',   hex: '#16A34A', label: 'Green'   },
-  { id: 'purple',  hex: '#7C3AED', label: 'Purple'  },
-  { id: 'amber',   hex: '#D97706', label: 'Amber'   },
-  { id: 'black',   hex: '#111111', label: 'Black'   },
-  { id: 'white',   hex: '#FFFFFF', label: 'White'   },
-] as const;
-
-export type AnnotateColorId = (typeof ANNOTATE_COLORS)[number]['id'];
 
 /** Note text sizes offered in the options card. */
 export const NOTE_SIZES = [
@@ -42,6 +30,39 @@ export const NOTE_SIZES = [
 const DEFAULT_NOTE_SIZE = 18;
 let noteSize: number = DEFAULT_NOTE_SIZE;
 let noteKeysExplained = false;
+
+/**
+ * Handwriting faces offered for notes. None are shipped: each is a stack of fonts that
+ * come with macOS or Windows, ending in the browser's own cursive face.
+ */
+export const NOTE_FONTS = [
+  { id: 'hand',   label: 'Hand',   stack: `"Segoe Print", "Bradley Hand", "Comic Sans MS", "Apple Chancery", cursive` },
+  { id: 'marker', label: 'Marker', stack: `"Marker Felt", "Ink Free", "Comic Sans MS", cursive` },
+  { id: 'neat',   label: 'Neat',   stack: `"Noteworthy", "Chalkboard SE", "MV Boli", "Comic Sans MS", cursive` },
+  { id: 'script', label: 'Script', stack: `"Snell Roundhand", "Segoe Script", "Brush Script MT", cursive` },
+] as const;
+
+export type NoteFontId = (typeof NOTE_FONTS)[number]['id'];
+let noteFont: NoteFontId = 'hand';
+
+function noteFontStack(id: string | undefined): string {
+  return (NOTE_FONTS.find((f) => f.id === id) ?? NOTE_FONTS[0]).stack;
+}
+
+export function getNoteFont(): NoteFontId {
+  return noteFont;
+}
+
+/** Face for new notes; a note being written right now takes it straight away. */
+export function setNoteFont(id: NoteFontId): void {
+  noteFont = id;
+  if (state.noteDraft) {
+    state.noteDraft.font = id;
+    state.noteDraft.el.style.fontFamily = noteFontStack(id);
+    // Let the field re-fit its height to the new face.
+    state.noteDraft.el.dispatchEvent(new Event('input'));
+  }
+}
 
 export function getNoteSize(): number {
   return noteSize;
@@ -56,6 +77,45 @@ export function setNoteSize(px: number): void {
     // Let the field re-fit its height to the new size.
     state.noteDraft.el.dispatchEvent(new Event('input'));
   }
+}
+
+/** Pen widths offered in the options card. */
+export const PEN_SIZES = [
+  { id: '3',  label: 'S',  px: 3 },
+  { id: '5',  label: 'M',  px: 5 },
+  { id: '8',  label: 'L',  px: 8 },
+  { id: '13', label: 'XL', px: 13 },
+] as const;
+const DEFAULT_PEN_SIZE = 5;
+let penSize: number = DEFAULT_PEN_SIZE;
+
+export function getPenSize(): number {
+  return penSize;
+}
+
+export function setPenSize(px: number): void {
+  penSize = px;
+}
+
+/** What an arrow's line ends in. */
+export type ArrowEnd = 'none' | 'arrow' | 'bar' | 'dot';
+
+export const ARROW_ENDS: { id: ArrowEnd; label: string }[] = [
+  { id: 'none',  label: 'None'  },
+  { id: 'arrow', label: 'Arrow' },
+  { id: 'bar',   label: 'Bar'   },
+  { id: 'dot',   label: 'Dot'   },
+];
+
+/** Ends given to new arrows. A plain line is `none` at both. */
+const arrowEnds: { start: ArrowEnd; end: ArrowEnd } = { start: 'none', end: 'arrow' };
+
+export function getArrowEnd(side: 'start' | 'end'): ArrowEnd {
+  return arrowEnds[side];
+}
+
+export function setArrowEnd(side: 'start' | 'end', kind: ArrowEnd): void {
+  arrowEnds[side] = kind;
 }
 
 interface MeasureAnn {
@@ -75,6 +135,10 @@ interface NoteAnn {
   color: string;
   /** Font size in px. Older notes without one use the default. */
   size?: number;
+  /** Which of NOTE_FONTS it is written in. Older notes without one use the first. */
+  font?: string;
+  /** Rotation in degrees about the top-left corner. Notes that were never rotated keep the default tilt. */
+  angle?: number;
 }
 
 interface ArrowAnn {
@@ -87,6 +151,9 @@ interface ArrowAnn {
   /** A point the arrow curves through. Absent or null for a straight arrow. */
   bend?: { x: number; y: number } | null;
   color: string;
+  /** What each end is drawn with. Older arrows have neither: no start, an arrowhead at the end. */
+  start?: ArrowEnd;
+  end?: ArrowEnd;
 }
 
 interface StrokeAnn {
@@ -94,13 +161,14 @@ interface StrokeAnn {
   kind: 'stroke';
   points: { x: number; y: number }[];
   color: string;
+  /** Nominal width in px. */
+  size?: number;
 }
 
 type Annotation = MeasureAnn | NoteAnn | ArrowAnn | StrokeAnn;
 
 interface AnnotateState {
   tool: AnnotateTool;
-  color: string;
   items: Annotation[];
   hoveredRect: Rect | null;
   mouseX: number;
@@ -111,19 +179,19 @@ interface AnnotateState {
   draftArrow: { x1: number; y1: number; x2: number; y2: number } | null;
   draftStroke: { x: number; y: number }[];
   /** Draft note stores document coords. */
-  noteDraft: { x: number; y: number; el: HTMLTextAreaElement; color: string; size: number } | null;
+  noteDraft: { x: number; y: number; el: HTMLTextAreaElement; color: string; size: number; font: NoteFontId } | null;
 }
 
-const NOTE_FONT = `"Segoe Print", "Bradley Hand", "Comic Sans MS", "Apple Chancery", cursive`;
+/** Size callouts are always lettered in the first face. */
+const NOTE_FONT: string = NOTE_FONTS[0].stack;
 /** Shared by a saved note and the one being typed, so saving does not shift or restyle the text. */
 const NOTE_MAX_WIDTH = 240;
 const NOTE_TEXT_SHADOW = '0 1px 0 rgba(255,255,255,0.85)';
-const NOTE_TILT = 'rotate(-1.5deg)';
-const DEFAULT_COLOR = ANNOTATE_COLORS[0].hex; // design-system accent
+const DEFAULT_NOTE_ANGLE = -1.5;
+const NOTE_TILT = `rotate(${DEFAULT_NOTE_ANGLE}deg)`;
 
 const state: AnnotateState = {
   tool: 'measure',
-  color: DEFAULT_COLOR,
   items: [],
   hoveredRect: null,
   mouseX: 0,
@@ -168,18 +236,13 @@ export function getAnnotateTool(): AnnotateTool {
   return state.tool;
 }
 
-export function setAnnotateColor(hex: string): void {
-  state.color = hex;
-  if (state.noteDraft) {
-    state.noteDraft.color = hex;
-    state.noteDraft.el.style.color = hex;
-    state.noteDraft.el.style.caretColor = hex;
-  }
-}
-
-export function getAnnotateColor(): string {
-  return state.color;
-}
+// A note being written takes a newly picked colour straight away.
+onMarkColorChange((hex) => {
+  if (!state.noteDraft) return;
+  state.noteDraft.color = hex;
+  state.noteDraft.el.style.color = hex;
+  state.noteDraft.el.style.caretColor = hex;
+});
 
 export function clearAnnotations(): void {
   commitNoteDraft(true);
@@ -244,7 +307,7 @@ export function initAnnotateMode(o: OverlayElements): void {
   setCursorResolver(() => {
     if (state.tool === 'note') {
       if (overNoteDelete) return 'delete';
-      if (noteDrag || activeNoteId) return 'grab';
+      if (noteDrag || noteRotate || activeNoteId) return 'grab';
       return 'ibeam';
     }
     if (state.tool === 'pen') return 'pen';
@@ -407,82 +470,185 @@ function drawArrowHandles(ctx: CanvasRenderingContext2D, item: ArrowAnn): void {
 }
 
 // ─── Notes ────────────────────────────────────────────────────────────────────
-// With the note tool, a note you point at can be dragged to move it, and shows
-// a small delete button on its corner.
+// With the note tool, a note you point at can be dragged to move it, shows a
+// small delete button on its corner, and a handle above it that rotates it.
+// Hold Shift while rotating to lock to 15° steps.
 
 let activeNoteId: string | null = null;
 let overNoteDelete = false;
+let overNoteRotate = false;
 let noteDrag: { id: string; lastX: number; lastY: number; moved: boolean } | null = null;
+/** Centre is in page space; `from` is the pointer's direction from it when the drag began. */
+let noteRotate: { id: string; cx: number; cy: number; from: number; startAngle: number; moved: boolean } | null = null;
 /** The click that ends a drag or a delete must not also start a new note. */
 let swallowNoteClick = false;
 
 const NOTE_DELETE_R = 8;
+const NOTE_PAD = 4;
+const NOTE_ROTATE_R = 5;
+/** How far above the note's top edge the rotate handle sits. */
+const NOTE_ROTATE_OFFSET = 14;
+const NOTE_ANGLE_STEP = 15;
 
-function noteRect(id: string): DOMRect | null {
-  return noteLayer?.querySelector(`[data-ann-id="${id}"]`)?.getBoundingClientRect() ?? null;
+/** A note's box before rotation (viewport space) and the angle it is turned by about its top-left corner. */
+interface NoteBox { x: number; y: number; w: number; h: number; angle: number }
+
+const noteAngle = (note: NoteAnn): number => note.angle ?? DEFAULT_NOTE_ANGLE;
+
+function noteEl(id: string): HTMLElement | null {
+  return noteLayer?.querySelector<HTMLElement>(`[data-ann-id="${id}"]`) ?? null;
+}
+
+function findNote(id: string | null | undefined): NoteAnn | null {
+  if (!id) return null;
+  return state.items.find((i): i is NoteAnn => i.kind === 'note' && i.id === id) ?? null;
+}
+
+function noteBox(note: NoteAnn): NoteBox | null {
+  const el = noteEl(note.id);
+  if (!el) return null;
+  return {
+    x: toViewX(note.x), y: toViewY(note.y),
+    w: el.offsetWidth, h: el.offsetHeight,
+    angle: (noteAngle(note) * Math.PI) / 180,
+  };
+}
+
+/** A viewport point in the note's own unrotated space, origin at its top-left corner. */
+function toNoteSpace(b: NoteBox, x: number, y: number): Pt {
+  const dx = x - b.x; const dy = y - b.y;
+  const cos = Math.cos(b.angle); const sin = Math.sin(b.angle);
+  return { x: dx * cos + dy * sin, y: dy * cos - dx * sin };
+}
+
+function fromNoteSpace(b: NoteBox, x: number, y: number): Pt {
+  const cos = Math.cos(b.angle); const sin = Math.sin(b.angle);
+  return { x: b.x + x * cos - y * sin, y: b.y + x * sin + y * cos };
+}
+
+function inNoteBox(b: NoteBox, x: number, y: number, slop: number): boolean {
+  const p = toNoteSpace(b, x, y);
+  return p.x >= -slop && p.x <= b.w + slop && p.y >= -slop && p.y <= b.h + slop;
 }
 
 /** Centre of the delete button for a note's box: just outside its top-right corner. */
-function noteDeleteCentre(r: DOMRect): Pt {
+function noteDeleteCentre(b: NoteBox): Pt {
+  const c = fromNoteSpace(b, b.w + 6, -2);
   // Kept on screen when the note runs up to the edge of the window.
   return {
-    x: Math.min(r.right + 6, window.innerWidth - NOTE_DELETE_R - 2),
-    y: Math.max(r.top - 2, NOTE_DELETE_R + 2),
+    x: Math.min(c.x, window.innerWidth - NOTE_DELETE_R - 2),
+    y: Math.max(c.y, NOTE_DELETE_R + 2),
   };
+}
+
+/** Centre of the rotate handle: above the middle of the note's top edge. */
+function noteRotateCentre(b: NoteBox): Pt {
+  return fromNoteSpace(b, b.w / 2, -NOTE_ROTATE_OFFSET);
 }
 
 function noteAt(x: number, y: number): NoteAnn | null {
   for (let i = state.items.length - 1; i >= 0; i--) {
     const item = state.items[i]!;
     if (item.kind !== 'note') continue;
-    const r = noteRect(item.id);
-    if (r && x >= r.left - 4 && x <= r.right + 4 && y >= r.top - 4 && y <= r.bottom + 4) return item;
+    const b = noteBox(item);
+    if (b && inNoteBox(b, x, y, NOTE_PAD)) return item;
   }
   return null;
 }
 
-/** Track which note the pointer is on, and whether it is on that note's delete button. */
+/** Track which note the pointer is on, and whether it is on that note's delete button or rotate handle. */
 function updateNoteHover(x: number, y: number, onUi: boolean): void {
   let id: string | null = null;
   let onDelete = false;
+  let onRotate = false;
   if (!onUi) {
-    // The delete button sits outside the note's box, so check it first to keep the note active.
-    const current = activeNoteId ? noteRect(activeNoteId) : null;
-    if (current) {
-      const c = noteDeleteCentre(current);
-      onDelete = Math.hypot(x - c.x, y - c.y) <= NOTE_DELETE_R + 3;
+    // Both controls sit outside the note's box, so check them first to keep the note active.
+    const current = findNote(activeNoteId);
+    const b = current ? noteBox(current) : null;
+    if (b) {
+      const d = noteDeleteCentre(b);
+      onDelete = Math.hypot(x - d.x, y - d.y) <= NOTE_DELETE_R + 3;
+      const r = noteRotateCentre(b);
+      // Reaches down to the outline, so the note stays active on the way to the handle.
+      onRotate = !onDelete && Math.hypot(x - r.x, y - r.y) <= NOTE_ROTATE_OFFSET - NOTE_PAD + 1;
     }
-    id = onDelete ? activeNoteId : noteAt(x, y)?.id ?? null;
+    id = onDelete || onRotate ? activeNoteId : noteAt(x, y)?.id ?? null;
   }
-  if (id !== activeNoteId || onDelete !== overNoteDelete) {
+  if (id !== activeNoteId || onDelete !== overNoteDelete || onRotate !== overNoteRotate) {
     activeNoteId = id;
     overNoteDelete = onDelete;
+    overNoteRotate = onRotate;
     refreshCursor();
   }
 }
 
-function drawNoteControls(ctx: CanvasRenderingContext2D, id: string): void {
-  const r = noteRect(id);
-  if (!r) return;
+/** Turn the note about its centre to follow the pointer. */
+function rotateNote(e: MouseEvent): void {
+  const rot = noteRotate;
+  const note = findNote(rot?.id);
+  const el = note && noteEl(note.id);
+  if (!rot || !note || !el) return;
+
+  const pointer = Math.atan2(e.clientY - toViewY(rot.cy), e.clientX - toViewX(rot.cx));
+  let deg = rot.startAngle + ((pointer - rot.from) * 180) / Math.PI;
+  if (e.shiftKey) deg = Math.round(deg / NOTE_ANGLE_STEP) * NOTE_ANGLE_STEP;
+  deg = ((((deg + 180) % 360) + 360) % 360) - 180;
+  deg = Math.round(deg * 10) / 10;
+  if (deg === noteAngle(note)) return;
+
+  // The element turns about its top-left corner, so move that corner to keep the centre where it was.
+  const rad = (deg * Math.PI) / 180;
+  const hw = el.offsetWidth / 2; const hh = el.offsetHeight / 2;
+  note.angle = deg;
+  note.x = rot.cx - (hw * Math.cos(rad) - hh * Math.sin(rad));
+  note.y = rot.cy - (hw * Math.sin(rad) + hh * Math.cos(rad));
+  el.style.left = `${toViewX(note.x)}px`;
+  el.style.top = `${toViewY(note.y)}px`;
+  el.style.transform = `rotate(${deg}deg)`;
+  rot.moved = true;
+}
+
+function drawNoteControls(ctx: CanvasRenderingContext2D, note: NoteAnn): void {
+  const b = noteBox(note);
+  if (!b) return;
   ctx.save();
-  // Outline the note you would move
-  ctx.strokeStyle = 'rgba(255, 69, 0, 0.6)';
+  ctx.strokeStyle = markRgba(0.6);
   ctx.lineWidth = 1;
+
+  // Outline the note you would move, turned the way the note is
+  ctx.save();
+  ctx.translate(b.x, b.y);
+  ctx.rotate(b.angle);
   ctx.setLineDash([4, 3]);
   ctx.beginPath();
-  ctx.roundRect(r.left - 4, r.top - 4, r.width + 8, r.height + 8, 4);
+  ctx.roundRect(-NOTE_PAD, -NOTE_PAD, b.w + NOTE_PAD * 2, b.h + NOTE_PAD * 2, 4);
   ctx.stroke();
   ctx.setLineDash([]);
 
+  // Rotate handle, joined to the outline by a short stem
+  ctx.beginPath();
+  ctx.moveTo(b.w / 2, -NOTE_PAD);
+  ctx.lineTo(b.w / 2, -NOTE_ROTATE_OFFSET + NOTE_ROTATE_R);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(b.w / 2, -NOTE_ROTATE_OFFSET, NOTE_ROTATE_R, 0, Math.PI * 2);
+  ctx.fillStyle = '#fff';
+  ctx.fill();
+  ctx.strokeStyle = getMarkColor();
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  ctx.restore();
+
   // Delete button
-  const c = noteDeleteCentre(r);
+  const c = noteDeleteCentre(b);
   ctx.beginPath();
   ctx.arc(c.x, c.y, NOTE_DELETE_R, 0, Math.PI * 2);
-  ctx.fillStyle = '#FF4500';
+  ctx.fillStyle = getMarkColor();
   ctx.fill();
   ctx.strokeStyle = '#fff';
   ctx.lineWidth = 1.5;
   ctx.stroke();
+  ctx.strokeStyle = onMarkColor();
   ctx.lineCap = 'round';
   ctx.beginPath();
   ctx.moveTo(c.x - 2.75, c.y - 2.75); ctx.lineTo(c.x + 2.75, c.y + 2.75);
@@ -494,7 +660,9 @@ function drawNoteControls(ctx: CanvasRenderingContext2D, id: string): void {
 function resetNoteInteraction(): void {
   activeNoteId = null;
   overNoteDelete = false;
+  overNoteRotate = false;
   noteDrag = null;
+  noteRotate = null;
   swallowNoteClick = false;
 }
 
@@ -503,9 +671,9 @@ function resetNoteInteraction(): void {
 const HISTORY_LIMIT = 50;
 const history: Annotation[][] = [];
 
-/** Snapshot the annotations before changing them. */
+/** Snapshot the annotations before changing them. Copied, because moving or rotating edits one in place. */
 function remember(): void {
-  history.push([...state.items]);
+  history.push(state.items.map((i) => ({ ...i })));
   if (history.length > HISTORY_LIMIT) history.shift();
 }
 
@@ -538,14 +706,16 @@ function annotationAt(x: number, y: number): Annotation | null {
     if (item.kind === 'arrow') {
       if (arrowPartAt(item, x, y)) return item;
     } else if (item.kind === 'stroke') {
+      const dot = item.points[0];
+      if (item.points.length === 1 && dot && Math.hypot(px - dot.x, py - dot.y) <= HIT_SLOP) return item;
       for (let j = 1; j < item.points.length; j++) {
         const a = item.points[j - 1]!;
         const b = item.points[j]!;
         if (distToSegment(px, py, a.x, a.y, b.x, b.y) <= HIT_SLOP) return item;
       }
     } else if (item.kind === 'note') {
-      const r = noteLayer?.querySelector(`[data-ann-id="${item.id}"]`)?.getBoundingClientRect();
-      if (r && x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return item;
+      const b = noteBox(item);
+      if (b && inNoteBox(b, x, y, 0)) return item;
     } else {
       const r = getElementRect(item.el);
       if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return item;
@@ -605,7 +775,7 @@ function createNoteEl(note: NoteAnn): HTMLDivElement {
     left: `${toViewX(note.x)}px`,
     top: `${toViewY(note.y)}px`,
     color: note.color,
-    fontFamily: NOTE_FONT,
+    fontFamily: noteFontStack(note.font),
     fontSize: `${note.size ?? DEFAULT_NOTE_SIZE}px`,
     fontWeight: '600',
     lineHeight: '1.25',
@@ -614,7 +784,7 @@ function createNoteEl(note: NoteAnn): HTMLDivElement {
     wordBreak: 'break-word',
     pointerEvents: 'none',
     textShadow: NOTE_TEXT_SHADOW,
-    transform: NOTE_TILT,
+    transform: `rotate(${noteAngle(note)}deg)`,
     transformOrigin: '0 0',
   });
   return el;
@@ -640,7 +810,7 @@ function commitNoteDraft(discardEmpty = false): void {
   if (!draft) return;
   const text = draft.el.value.trim();
   const color = draft.color;
-  const { x, y, size } = draft;
+  const { x, y, size, font } = draft;
   draft.el.remove();
   state.noteDraft = null;
   if (!text) {
@@ -648,7 +818,7 @@ function commitNoteDraft(discardEmpty = false): void {
     return;
   }
   remember();
-  state.items.push({ id: uid(), kind: 'note', x, y, text, color, size });
+  state.items.push({ id: uid(), kind: 'note', x, y, text, color, size, font });
   rebuildNoteDom();
 }
 
@@ -658,7 +828,7 @@ function startNoteAt(clientX: number, clientY: number): void {
 
   const x = toPageX(clientX);
   const y = toPageY(clientY);
-  const color = state.color;
+  const color = getMarkColor();
   const ta = document.createElement('textarea');
   ta.placeholder = 'Write a note…';
   ta.rows = 1;
@@ -676,7 +846,7 @@ function startNoteAt(clientX: number, clientY: number): void {
     overflow: 'hidden',
     color,
     caretColor: color,
-    fontFamily: NOTE_FONT,
+    fontFamily: noteFontStack(noteFont),
     fontSize: `${noteSize}px`,
     fontWeight: '600',
     lineHeight: '1.25',
@@ -701,7 +871,7 @@ function startNoteAt(clientX: number, clientY: number): void {
   ta.addEventListener('input', fit);
   noteLayer.style.pointerEvents = 'none';
   noteLayer.appendChild(ta);
-  state.noteDraft = { x, y, el: ta, color, size: noteSize };
+  state.noteDraft = { x, y, el: ta, color, size: noteSize, font: noteFont };
   // Said once: how to finish or abandon a note from the keyboard.
   if (!noteKeysExplained) {
     noteKeysExplained = true;
@@ -732,17 +902,7 @@ function onKeyDown(e: KeyboardEvent): void {
   const target = e.target as HTMLElement;
   if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) return;
 
-  // Shift+Digit1–8 picks a palette colour (use e.code — Shift+1 is "!" on US keyboards)
-  if (e.shiftKey && /^Digit[1-7]$/.test(e.code)) {
-    const swatch = ANNOTATE_COLORS[Number(e.code.replace('Digit', '')) - 1];
-    if (swatch) {
-      e.preventDefault();
-      e.stopPropagation();
-      setAnnotateColor(swatch.hex);
-      syncColorUi();
-    }
-    return;
-  }
+  if (e.shiftKey) return;
 
   switch (e.key.toLowerCase()) {
     case 'm': setAnnotateTool('measure'); syncToolUi(); break;
@@ -756,10 +916,10 @@ function syncToolUi(): void {
   setSegmented(document, 'annotate-tool', state.tool);
   const sizeRow = document.querySelector<HTMLElement>('[data-note-size-row]');
   if (sizeRow) sizeRow.style.display = state.tool === 'note' ? 'block' : 'none';
-}
-
-function syncColorUi(): void {
-  setSwatches(document, 'annotate-color', state.color);
+  const endsRow = document.querySelector<HTMLElement>('[data-arrow-ends-row]');
+  if (endsRow) endsRow.style.display = state.tool === 'arrow' ? 'block' : 'none';
+  const penRow = document.querySelector<HTMLElement>('[data-pen-size-row]');
+  if (penRow) penRow.style.display = state.tool === 'pen' ? 'block' : 'none';
 }
 
 function onClick(e: MouseEvent): void {
@@ -791,7 +951,7 @@ function onClick(e: MouseEvent): void {
       return;
     }
     remember();
-    state.items.push({ id: uid(), kind: 'measure', el, color: state.color });
+    state.items.push({ id: uid(), kind: 'measure', el, color: getMarkColor() });
   }
 }
 
@@ -811,6 +971,16 @@ function onMouseDown(e: MouseEvent): void {
       overNoteDelete = false;
       refreshCursor();
       markActive();
+    } else if (overNoteRotate) {
+      const note = findNote(activeNoteId);
+      const b = note ? noteBox(note) : null;
+      if (note && b) {
+        const c = fromNoteSpace(b, b.w / 2, b.h / 2);
+        noteRotate = {
+          id: note.id, cx: toPageX(c.x), cy: toPageY(c.y),
+          from: Math.atan2(e.clientY - c.y, e.clientX - c.x), startAngle: noteAngle(note), moved: false,
+        };
+      }
     } else {
       noteDrag = { id: activeNoteId, lastX: e.clientX, lastY: e.clientY, moved: false };
     }
@@ -844,9 +1014,13 @@ function onMouseMove(e: MouseEvent): void {
     dragArrow(e);
     return;
   }
+  if (noteRotate) {
+    rotateNote(e);
+    return;
+  }
   if (noteDrag) {
     const drag = noteDrag;
-    const note = state.items.find((i): i is NoteAnn => i.kind === 'note' && i.id === drag.id);
+    const note = findNote(drag.id);
     if (note && (e.clientX !== drag.lastX || e.clientY !== drag.lastY)) {
       note.x += e.clientX - drag.lastX;
       note.y += e.clientY - drag.lastY;
@@ -875,7 +1049,10 @@ function onMouseMove(e: MouseEvent): void {
     }
   }
   if (state.drawing && state.tool === 'pen') {
-    state.draftStroke.push({ x: e.clientX, y: e.clientY });
+    const p = { x: e.clientX, y: e.clientY };
+    // Shift rules a straight line from where the stroke began.
+    if (e.shiftKey && state.draftStroke.length > 0) state.draftStroke = [state.draftStroke[0]!, p];
+    else state.draftStroke.push(p);
     return;
   }
 
@@ -899,6 +1076,11 @@ function onMouseUp(e: MouseEvent): void {
     noteDrag = null;
     return;
   }
+  if (noteRotate) {
+    if (!noteRotate.moved) history.pop();
+    noteRotate = null;
+    return;
+  }
   if (!state.drawing) return;
   state.drawing = false;
 
@@ -913,19 +1095,23 @@ function onMouseUp(e: MouseEvent): void {
         y1: toPageY(y1),
         x2: toPageX(x2),
         y2: toPageY(y2),
-        color: state.color,
+        color: getMarkColor(),
+        start: arrowEnds.start,
+        end: arrowEnds.end,
       });
     }
     state.draftArrow = null;
   }
 
-  if (state.tool === 'pen' && state.draftStroke.length > 1) {
+  // A press that never moved leaves a dot.
+  if (state.tool === 'pen' && state.draftStroke.length > 0) {
     remember();
     state.items.push({
       id: uid(),
       kind: 'stroke',
       points: state.draftStroke.map((p) => ({ x: toPageX(p.x), y: toPageY(p.y) })),
-      color: state.color,
+      color: getMarkColor(),
+      size: penSize,
     });
     state.draftStroke = [];
   } else {
@@ -950,18 +1136,20 @@ function renderInteractive(): void {
   clearCanvas(ctx);
 
   const hover = hoverBox.step(state.tool === 'measure' && !hoverSuppressed() ? state.hoveredRect : null);
-  if (hover) drawMeasure(ctx, boxToRect(hover), state.color, true, hover.opacity);
+  if (hover) drawMeasure(ctx, boxToRect(hover), getMarkColor(), true, hover.opacity);
   if (state.draftArrow) {
     drawArrow(
       ctx,
       { x: state.draftArrow.x1, y: state.draftArrow.y1 },
       { x: state.draftArrow.x2, y: state.draftArrow.y2 },
       null,
-      state.color,
+      getMarkColor(),
+      arrowEnds.start,
+      arrowEnds.end,
     );
   }
-  // Outline and delete button for the note you are on or dragging
-  const shownNote = noteDrag?.id ?? activeNoteId;
+  // Outline, rotate handle and delete button for the note you are on, dragging or turning
+  const shownNote = findNote(noteDrag?.id ?? noteRotate?.id ?? activeNoteId);
   if (state.tool === 'note' && shownNote && !hoverSuppressed()) drawNoteControls(ctx, shownNote);
 
   // Handles for the arrow you are on or dragging
@@ -970,9 +1158,7 @@ function renderInteractive(): void {
     const shown = state.items.find((i): i is ArrowAnn => i.kind === 'arrow' && i.id === shownId);
     if (shown) drawArrowHandles(ctx, shown);
   }
-  if (state.draftStroke.length > 1) {
-    drawStroke(ctx, state.draftStroke, state.color);
-  }
+  if (state.draftStroke.length > 0) drawDraftStroke(ctx);
 
   drawRulers(ctx, state.mouseX, state.mouseY);
 }
@@ -993,13 +1179,9 @@ export function paintAnnotations(
       drawMeasure(ctx, getElementRect(item.el), item.color, false);
     } else if (item.kind === 'arrow') {
       const { a, b, bend } = arrowView(item);
-      drawArrow(ctx, a, b, bend, item.color);
+      drawArrow(ctx, a, b, bend, item.color, item.start, item.end);
     } else if (item.kind === 'stroke') {
-      drawStroke(
-        ctx,
-        item.points.map((p) => ({ x: toViewX(p.x), y: toViewY(p.y) })),
-        item.color,
-      );
+      drawStroke(ctx, item);
     }
   }
 }
@@ -1084,6 +1266,8 @@ function drawArrow(
   b: Pt,
   bend: Pt | null,
   color: string,
+  start: ArrowEnd = 'none',
+  end: ArrowEnd = 'arrow',
 ): void {
   ctx.save();
   const stroke = hexToRgba(color, 0.95);
@@ -1101,35 +1285,58 @@ function drawArrow(
   else ctx.lineTo(b.x, b.y);
   ctx.stroke();
 
-  // The head follows the direction the line arrives from.
-  const from = bend ? c : a;
-  const angle = Math.atan2(b.y - from.y, b.x - from.x);
-  const head = 10;
-  ctx.beginPath();
-  ctx.moveTo(b.x, b.y);
-  ctx.lineTo(b.x - head * Math.cos(angle - 0.4), b.y - head * Math.sin(angle - 0.4));
-  ctx.lineTo(b.x - head * Math.cos(angle + 0.4), b.y - head * Math.sin(angle + 0.4));
-  ctx.closePath();
-  ctx.fill();
+  // Each end follows the direction the line arrives from.
+  drawArrowEnd(ctx, end, b, bend ? c : a);
+  drawArrowEnd(ctx, start, a, bend ? c : b);
   ctx.restore();
 }
 
-function drawStroke(
-  ctx: CanvasRenderingContext2D,
-  points: { x: number; y: number }[],
-  color: string,
-): void {
-  if (points.length < 2) return;
-  ctx.save();
-  ctx.strokeStyle = hexToRgba(color, 0.95);
-  ctx.lineWidth = 2.25;
-  ctx.lineCap = 'round';
-  ctx.lineJoin = 'round';
+/** One end of an arrow at `tip`, facing away from `from`. Uses the stroke and fill already set. */
+function drawArrowEnd(ctx: CanvasRenderingContext2D, kind: ArrowEnd, tip: Pt, from: Pt): void {
+  if (kind === 'none') return;
+  const angle = Math.atan2(tip.y - from.y, tip.x - from.x);
   ctx.beginPath();
-  ctx.moveTo(points[0]!.x, points[0]!.y);
-  for (let i = 1; i < points.length; i++) {
-    ctx.lineTo(points[i]!.x, points[i]!.y);
+  if (kind === 'arrow') {
+    const head = 10;
+    ctx.moveTo(tip.x, tip.y);
+    ctx.lineTo(tip.x - head * Math.cos(angle - 0.4), tip.y - head * Math.sin(angle - 0.4));
+    ctx.lineTo(tip.x - head * Math.cos(angle + 0.4), tip.y - head * Math.sin(angle + 0.4));
+    ctx.closePath();
+    ctx.fill();
+  } else if (kind === 'bar') {
+    // A short line across the end, like the cap of a dimension line.
+    const half = 6;
+    const nx = -Math.sin(angle); const ny = Math.cos(angle);
+    ctx.moveTo(tip.x - nx * half, tip.y - ny * half);
+    ctx.lineTo(tip.x + nx * half, tip.y + ny * half);
+    ctx.stroke();
+  } else {
+    ctx.arc(tip.x, tip.y, 3.5, 0, Math.PI * 2);
+    ctx.fill();
   }
-  ctx.stroke();
+}
+
+/** Outlines of finished strokes, in page space. A stroke never changes once drawn, so each is built once. */
+const strokePaths = new WeakMap<StrokeAnn, Path2D>();
+
+function drawStroke(ctx: CanvasRenderingContext2D, item: StrokeAnn): void {
+  let path = strokePaths.get(item);
+  if (!path) {
+    path = inkPath(item.points, item.size ?? DEFAULT_PEN_SIZE);
+    strokePaths.set(item, path);
+  }
+  ctx.save();
+  // Page space to viewport: only scrolling moves a stroke, so its outline is reused as is.
+  ctx.translate(toViewX(0), toViewY(0));
+  ctx.fillStyle = item.color;
+  ctx.fill(path);
+  ctx.restore();
+}
+
+/** The stroke still under the pen, in viewport space. */
+function drawDraftStroke(ctx: CanvasRenderingContext2D): void {
+  ctx.save();
+  ctx.fillStyle = getMarkColor();
+  ctx.fill(inkPath(state.draftStroke, penSize, false));
   ctx.restore();
 }

@@ -2,11 +2,11 @@
  * Inspect mode — hover to outline what is under the pointer and see its size;
  * click text or an element to open its typography, colours and box values.
  */
-import type { Rect } from '@raval/shared';
+import type { Rect, CornerRadii } from '@raval/shared';
 import type { OverlayElements } from '../overlay';
 import { clearCanvas, drawRulers, drawColorPickHighlight } from '../renderer';
-import { getElementAtPoint, getElementRect, getBoxModel } from '../detector';
-import { isRavalElement, copyToClipboard, domRectToRect, formatDimensions } from '../utils';
+import { getElementAtPoint, getElementRect, getBoxModel, getCornerRadii } from '../detector';
+import { isRavalElement, copyToClipboard, domRectToRect, formatDimensions, formatRadii } from '../utils';
 import { showToast, setLabel, hideLabel } from '../labels';
 import { setCursorResolver } from '../cursor';
 import { BoxSpring, boxToRect } from '../motion';
@@ -14,6 +14,8 @@ import { addRenderer, markActive } from '../frame';
 import { UI, segmentedHTML, setSegmented } from '../tokens';
 import { onPageChange } from '../page-scope';
 import { hoverSuppressed } from '../pointer';
+import { getMarkColor, onMarkColor, onMarkColorChange } from '../mark-color';
+import { readSpacing, drawSpacing, type Spacing } from '../spacing';
 
 interface ColorEntry {
   label: string;
@@ -98,11 +100,19 @@ const supportsHighlightApi = typeof CSS !== 'undefined' && 'highlights' in CSS;
 let highlightStyleEl: HTMLStyleElement | null = null;
 let appliedRanges: Range[] = [];
 
+function highlightRule(): string {
+  return `::highlight(${HIGHLIGHT_NAME}) { background-color: ${getMarkColor()}; color: ${onMarkColor()}; }`;
+}
+
+onMarkColorChange(() => {
+  if (highlightStyleEl) highlightStyleEl.textContent = highlightRule();
+});
+
 function ensureHighlightStyle(): void {
   if (highlightStyleEl) return;
   const style = document.createElement('style');
   style.id = 'raval-inspect-highlight-style';
-  style.textContent = `::highlight(${HIGHLIGHT_NAME}) { background-color: #FF4500; color: #fff; }`;
+  style.textContent = highlightRule();
   document.documentElement.appendChild(style);
   highlightStyleEl = style;
 }
@@ -602,6 +612,11 @@ function selectionRect(sel: Selection): Rect {
   return sel.range ? domRectToRect(sel.range.getBoundingClientRect()) : getElementRect(sel.el);
 }
 
+/** What the panel keeps clear of: the selection, or its whole margin box while the spacing bands are drawn. */
+function panelAnchor(sel: Selection): Rect {
+  return showSpacing ? spacingOf(sel.el).margin : selectionRect(sel);
+}
+
 function select(sel: Selection): void {
   const wasOpen = state.selected !== null;
   state.selected = sel;
@@ -611,7 +626,7 @@ function select(sel: Selection): void {
   refreshPanel();
   // A panel that is opening appears in place; only one that is already open glides.
   if (!wasOpen) panelSpring.reset();
-  positionPanel(selectionRect(sel));
+  positionPanel(panelAnchor(sel));
   setPanelVisible(true);
   syncTextHighlight();
 }
@@ -755,6 +770,42 @@ function extractBox(el: Element): TypeEntry[] {
   return entries;
 }
 
+// ─── Corner radius ────────────────────────────────────────────────────────────
+
+const RADII_MEMO_MS = 120;
+let radiiMemo = new WeakMap<Element, { t: number; radii: CornerRadii | null }>();
+
+/** Rendered corner radii of an element. Read every frame, so the style lookup is reused briefly. */
+function radiiOf(el: Element): CornerRadii | null {
+  const now = performance.now();
+  const hit = radiiMemo.get(el);
+  if (hit && now - hit.t < RADII_MEMO_MS) return hit.radii;
+  const radii = getCornerRadii(el);
+  radiiMemo.set(el, { t: now, radii });
+  return radii;
+}
+
+// ─── Spacing ──────────────────────────────────────────────────────────────────
+
+let showSpacing = false;
+let spacingMemo: { el: Element; t: number; sx: number; sy: number; spacing: Spacing } | null = null;
+
+/** Show the clicked element's padding, margin and child gaps (the "Show spacing" setting). */
+export function setInspectSpacing(visible: boolean): void {
+  showSpacing = visible;
+  markActive();
+}
+
+/** Read every frame while something is selected; the style and child lookups are reused until something moves. */
+function spacingOf(el: Element): Spacing {
+  const now = performance.now();
+  const m = spacingMemo;
+  if (m && m.el === el && m.sx === window.scrollX && m.sy === window.scrollY && now - m.t < RADII_MEMO_MS) return m.spacing;
+  const spacing = readSpacing(el);
+  spacingMemo = { el, t: now, sx: window.scrollX, sy: window.scrollY, spacing };
+  return spacing;
+}
+
 // ─── Event handlers ───────────────────────────────────────────────────────────
 
 function onMouseMove(e: MouseEvent): void {
@@ -843,23 +894,31 @@ function render(): void {
     deselect();
   } else if (sel) {
     const rect = selectionRect(sel);
-    positionPanel(rect);
+    positionPanel(panelAnchor(sel));
     const locked = selectBox.step(rect);
-    if (locked) drawColorPickHighlight(ctx, locked, !!sel.range, true, !supportsHighlightApi);
+    if (locked) {
+      // Spacing belongs to what was clicked. For a clicked word that is the element holding it,
+      // the same one the panel's Box section describes.
+      if (showSpacing) drawSpacing(ctx, spacingOf(sel.el), locked.opacity);
+      // With the bands on, the selection is an outline only, so its tint does not muddy their colours.
+      drawColorPickHighlight(ctx, locked, !!sel.range, true, !supportsHighlightApi, sel.range ? null : radiiOf(sel.el), showSpacing);
+    }
   }
 
   // While pinned, keep drawing the last target so the highlight doesn't blink out.
   const box = hoverBox.step(state.lastRect);
-  if (box) drawColorPickHighlight(ctx, box, !!state.textTarget, false, !supportsHighlightApi);
-
-  // Elements (not words) also get their size.
   const hoverEl = state.hoverEl?.isConnected ? state.hoverEl : null;
+  const hoverRadii = hoverEl ? radiiOf(hoverEl) : null;
+  if (box) drawColorPickHighlight(ctx, box, !!state.textTarget, false, !supportsHighlightApi, hoverRadii);
+
+  // Elements (not words) also get their size, and their corner radius when they have one.
   if (box && hoverEl) {
     const real = getElementRect(hoverEl);
     const r = boxToRect(box);
     const labelY = r.top > 28 ? r.top - 30 : r.bottom + 8;
     const dims = formatDimensions(real.width, real.height);
-    setLabel(overlay.labelContainer, 'dimension', dims, r.left, labelY, dims);
+    const text = hoverRadii ? `${dims} · ${formatRadii(hoverRadii)}` : dims;
+    setLabel(overlay.labelContainer, 'dimension', text, r.left, labelY, text);
   } else {
     hideLabel('dimension');
   }
@@ -892,6 +951,8 @@ export function initInspectMode(o: OverlayElements): void {
   selectBox.reset();
   panelPos = { x: NaN, y: NaN };
   lastSample = { x: NaN, y: NaN, sx: NaN, sy: NaN, t: 0 };
+  radiiMemo = new WeakMap();
+  spacingMemo = null;
 
   const panel = buildPanel();
   document.documentElement.appendChild(panel);

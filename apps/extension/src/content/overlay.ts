@@ -6,6 +6,8 @@
 /** While this class is on <html>, the page's own cursors are hidden in favour of the Raval mark. */
 export const HIDE_CURSOR_CLASS = 'raval-hide-cursor';
 export const TEXT_CURSOR_CLASS = 'raval-text-cursor';
+/** While this class is on <html>, clicks reach the page everywhere, so a guide can be placed anywhere. */
+export const PASS_THROUGH_CLASS = 'raval-pass-through';
 
 export interface OverlayElements {
   root: HTMLDivElement;
@@ -65,6 +67,12 @@ export function createOverlay(): OverlayElements {
       /* Links and buttons set their own cursor, which would show next to the crosshair. */
       html.${HIDE_CURSOR_CLASS}, html.${HIDE_CURSOR_CLASS} * {
         cursor: none !important;
+      }
+      /* Embedded frames swallow the pointer and disabled controls never report a click. Let both
+         fall through to what is behind them while something is being placed. */
+      html.${PASS_THROUGH_CLASS} iframe, html.${PASS_THROUGH_CLASS} embed, html.${PASS_THROUGH_CLASS} object,
+      html.${PASS_THROUGH_CLASS} :disabled {
+        pointer-events: none !important;
       }
       /* Placing a note: the I-beam everywhere, not only where the page has text. */
       html.${TEXT_CURSOR_CLASS}, html.${TEXT_CURSOR_CLASS} * {

@@ -5,6 +5,7 @@
 import { isRavalElement } from './utils';
 import { HIDE_CURSOR_CLASS, TEXT_CURSOR_CLASS } from './overlay';
 import { trackPointerTarget } from './pointer';
+import { getMarkColor, onMarkColor, onMarkColorChange } from './mark-color';
 
 const CURSOR_ID = 'raval-cursor';
 
@@ -12,7 +13,7 @@ let cursorEl: HTMLDivElement | null = null;
 const OFFSCREEN = -200;
 
 /** What the custom cursor should look like at the current pointer position. */
-export type CursorKind = 'crosshair' | 'text' | 'ibeam' | 'delete' | 'remove' | 'pen' | 'grab' | 'move-x' | 'move-y';
+export type CursorKind = 'native' | 'crosshair' | 'text' | 'ibeam' | 'delete' | 'remove' | 'pen' | 'grab' | 'move-x' | 'move-y';
 
 /**
  * Modes can override cursor appearance (e.g. colour picker shows a native
@@ -48,10 +49,17 @@ function place(x: number, y: number): void {
 }
 
 let shownKind: CursorKind | null = null;
+let repaint: (() => void) | null = null;
+
+onMarkColorChange(() => {
+  if (!cursorEl) return;
+  repaint?.();
+  apply();
+});
 let last = { x: OFFSCREEN, y: OFFSCREEN, overUI: true };
 
 const GLYPH_OF: Record<CursorKind, string | null> = {
-  crosshair: 'crosshair', text: null, ibeam: null, delete: 'delete', remove: 'remove', pen: 'pen', grab: 'grab', 'move-x': 'move', 'move-y': 'move',
+  native: null, crosshair: 'crosshair', text: null, ibeam: null, delete: 'delete', remove: 'remove', pen: 'pen', grab: 'grab', 'move-x': 'move', 'move-y': 'move',
 };
 
 /** Swap the visible mark. Glyphs cross-fade and scale so a change of meaning is noticeable. */
@@ -78,8 +86,8 @@ function apply(): void {
   const kind = resolveCursor ? resolveCursor() : 'crosshair';
   setKind(kind);
   forceTextCursor(kind === 'ibeam');
-  if (kind === 'text' || kind === 'ibeam') {
-    // Hide the mark and defer to the browser's native I-beam.
+  if (kind === 'native' || kind === 'text' || kind === 'ibeam') {
+    // Hide the mark and defer to the browser: the page's own cursor, or its native I-beam.
     place(OFFSCREEN, OFFSCREEN);
     hideNativeCursor(false);
   } else {
@@ -128,45 +136,52 @@ export function initCursor(): void {
 
   const ARROWS = 'M0 -8.5V8.5M-3.5 -5L0 -8.5L3.5 -5M-3.5 5L0 8.5L3.5 5';
 
-  el.innerHTML = `
-    <div style="position:relative;width:18px;height:18px;">
-      ${glyph('crosshair', true, `
-        <svg width="18" height="18" viewBox="-9 -9 18 18" style="display:block;overflow:visible;">
-          <line x1="-9" y1="0" x2="-4" y2="0" stroke="#FF4500" stroke-width="1.5" stroke-linecap="round"/>
-          <line x1="4"  y1="0" x2="9"  y2="0" stroke="#FF4500" stroke-width="1.5" stroke-linecap="round"/>
-          <line x1="0" y1="-9" x2="0" y2="-4" stroke="#FF4500" stroke-width="1.5" stroke-linecap="round"/>
-          <line x1="0" y1="4"  x2="0" y2="9"  stroke="#FF4500" stroke-width="1.5" stroke-linecap="round"/>
-          <circle cx="0" cy="0" r="2.5" stroke="#FF4500" stroke-width="1.5" fill="none"/>
-        </svg>`)}
-      ${glyph('delete', false, `
-        <svg width="22" height="22" viewBox="-11 -11 22 22" style="display:block;overflow:visible;flex-shrink:0;">
-          <circle r="9.5" fill="#FF4500" stroke="#fff" stroke-width="1.5"/>
-          <path d="M-3.25 -3.25L3.25 3.25M3.25 -3.25L-3.25 3.25" stroke="#fff" stroke-width="1.75" stroke-linecap="round"/>
-        </svg>`)}
-      ${glyph('remove', false, `
-        <svg width="22" height="22" viewBox="-11 -11 22 22" style="display:block;overflow:visible;flex-shrink:0;">
-          <circle r="9.5" fill="#FF4500" stroke="#fff" stroke-width="1.5"/>
-          <path d="M-4.25 0H4.25" stroke="#fff" stroke-width="1.75" stroke-linecap="round"/>
-        </svg>`)}
-      ${glyph('pen', false, `
-        <!-- Pencil with its tip exactly on the pointer -->
-        <svg width="18" height="18" viewBox="-9 -9 18 18" style="display:block;overflow:visible;flex-shrink:0;" stroke-linejoin="round" stroke-linecap="round">
-          <path d="M0 0L1.3 -4.4L10.2 -13.3a1.9 1.9 0 0 1 2.7 0l0.4 0.4a1.9 1.9 0 0 1 0 2.7L4.4 -1.3Z" fill="#fff" stroke="#fff" stroke-width="4"/>
-          <path d="M0 0L1.3 -4.4L10.2 -13.3a1.9 1.9 0 0 1 2.7 0l0.4 0.4a1.9 1.9 0 0 1 0 2.7L4.4 -1.3Z" fill="#fff" stroke="#FF4500" stroke-width="1.5"/>
-          <path d="M8.4 -11.5L11.5 -8.4" stroke="#FF4500" stroke-width="1.5"/>
-        </svg>`)}
-      ${glyph('grab', false, `
-        <svg width="18" height="18" viewBox="-9 -9 18 18" style="display:block;overflow:visible;flex-shrink:0;">
-          <circle r="6.5" fill="#fff"/>
-          <circle r="5" fill="#fff" stroke="#FF4500" stroke-width="1.75"/>
-        </svg>`)}
-      ${glyph('move', false, `
-        <svg width="22" height="22" viewBox="-11 -11 22 22" style="display:block;overflow:visible;flex-shrink:0;" fill="none" stroke-linecap="round" stroke-linejoin="round">
-          <path d="${ARROWS}" stroke="#fff" stroke-width="4.5"/>
-          <path d="${ARROWS}" stroke="#FF4500" stroke-width="1.75"/>
-        </svg>`)}
-    </div>
-  `;
+  // Drawn in the mark colour, and redrawn when that changes.
+  repaint = (): void => {
+    const accent = getMarkColor();
+    const on = onMarkColor();
+    el.innerHTML = `
+      <div style="position:relative;width:18px;height:18px;">
+        ${glyph('crosshair', true, `
+          <svg width="18" height="18" viewBox="-9 -9 18 18" style="display:block;overflow:visible;">
+            <line x1="-9" y1="0" x2="-4" y2="0" stroke="${accent}" stroke-width="1.5" stroke-linecap="round"/>
+            <line x1="4"  y1="0" x2="9"  y2="0" stroke="${accent}" stroke-width="1.5" stroke-linecap="round"/>
+            <line x1="0" y1="-9" x2="0" y2="-4" stroke="${accent}" stroke-width="1.5" stroke-linecap="round"/>
+            <line x1="0" y1="4"  x2="0" y2="9"  stroke="${accent}" stroke-width="1.5" stroke-linecap="round"/>
+            <circle cx="0" cy="0" r="2.5" stroke="${accent}" stroke-width="1.5" fill="none"/>
+          </svg>`)}
+        ${glyph('delete', false, `
+          <svg width="22" height="22" viewBox="-11 -11 22 22" style="display:block;overflow:visible;flex-shrink:0;">
+            <circle r="9.5" fill="${accent}" stroke="${on}" stroke-width="1.5"/>
+            <path d="M-3.25 -3.25L3.25 3.25M3.25 -3.25L-3.25 3.25" stroke="${on}" stroke-width="1.75" stroke-linecap="round"/>
+          </svg>`)}
+        ${glyph('remove', false, `
+          <svg width="22" height="22" viewBox="-11 -11 22 22" style="display:block;overflow:visible;flex-shrink:0;">
+            <circle r="9.5" fill="${accent}" stroke="${on}" stroke-width="1.5"/>
+            <path d="M-4.25 0H4.25" stroke="${on}" stroke-width="1.75" stroke-linecap="round"/>
+          </svg>`)}
+        ${glyph('pen', false, `
+          <!-- Pencil with its tip exactly on the pointer -->
+          <svg width="18" height="18" viewBox="-9 -9 18 18" style="display:block;overflow:visible;flex-shrink:0;" stroke-linejoin="round" stroke-linecap="round">
+            <path d="M0 0L1.3 -4.4L10.2 -13.3a1.9 1.9 0 0 1 2.7 0l0.4 0.4a1.9 1.9 0 0 1 0 2.7L4.4 -1.3Z" fill="${on}" stroke="${on}" stroke-width="4"/>
+            <path d="M0 0L1.3 -4.4L10.2 -13.3a1.9 1.9 0 0 1 2.7 0l0.4 0.4a1.9 1.9 0 0 1 0 2.7L4.4 -1.3Z" fill="${on}" stroke="${accent}" stroke-width="1.5"/>
+            <path d="M8.4 -11.5L11.5 -8.4" stroke="${accent}" stroke-width="1.5"/>
+          </svg>`)}
+        ${glyph('grab', false, `
+          <svg width="18" height="18" viewBox="-9 -9 18 18" style="display:block;overflow:visible;flex-shrink:0;">
+            <circle r="6.5" fill="${on}"/>
+            <circle r="5" fill="${on}" stroke="${accent}" stroke-width="1.75"/>
+          </svg>`)}
+        ${glyph('move', false, `
+          <svg width="22" height="22" viewBox="-11 -11 22 22" style="display:block;overflow:visible;flex-shrink:0;" fill="none" stroke-linecap="round" stroke-linejoin="round">
+            <path d="${ARROWS}" stroke="${on}" stroke-width="4.5"/>
+            <path d="${ARROWS}" stroke="${accent}" stroke-width="1.75"/>
+          </svg>`)}
+      </div>
+    `;
+    shownKind = 'crosshair';
+  };
+  repaint();
 
   document.documentElement.appendChild(el);
   cursorEl = el;
@@ -180,6 +195,7 @@ export function destroyCursor(): void {
   document.removeEventListener('mousemove', onMove);
   cursorEl?.remove();
   cursorEl = null;
+  repaint = null;
   trackPointerTarget(null);
   shownKind = null;
   resolveCursor = null;

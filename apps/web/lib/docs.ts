@@ -123,6 +123,8 @@ Raval is keyboard-first. Press **?** while Raval is active to open the in-page s
 |---|---|
 | \`Option+Shift+C\` / \`Alt+Shift+C\` | Toggle Raval on/off |
 | \`1\` – \`4\` | Switch mode: Inspect, Measure, Guides, Annotate |
+| \`0\` | Browse: put the tool down and use the page; guides, pins and annotations stay. Pressing the active tool's toolbar button does the same |
+| \`Shift+1\` – \`Shift+8\` | Pick the colour guides, highlights, measurements and new annotations are drawn in |
 | \`R\` | Toggle rulers |
 | \`D\` | Open design token panel |
 | \`S\` | Capture screenshot |
@@ -137,6 +139,7 @@ Raval is keyboard-first. Press **?** while Raval is active to open the in-page s
 | Hover | Outline the element or word under the cursor and show its size |
 | Click | Open details: typography, colours, and box values |
 | Click again | Close the details |
+| \`B\` | Show padding, margin and gaps on the element you click |
 | \`F\` | Cycle colour format (HEX / RGB / HSL) |
 
 ## Measure mode
@@ -155,6 +158,7 @@ Raval is keyboard-first. Press **?** while Raval is active to open the in-page s
 | \`C\` / \`H\` / \`V\` | Place both, horizontal only, or vertical only |
 | Click a guide | Delete it |
 | Drag a guide | Move it |
+| Pointer between two guides | Shows the distance between them |
 | \`Del\` / \`Backspace\` | Delete the hovered guide, or clear all |
 
 ## Annotate mode
@@ -162,6 +166,7 @@ Raval is keyboard-first. Press **?** while Raval is active to open the in-page s
 | Shortcut | Action |
 |---|---|
 | \`M\` / \`N\` / \`A\` / \`P\` | Size, Note, Arrow, or Pen tool |
+| Drag a note's handle | Rotate it (\`Shift\`: 15° steps) |
 | Right-click an annotation | Remove it |
 | \`Del\` / \`Backspace\` | Clear all annotations |
     `.trim(),
@@ -178,7 +183,7 @@ Inspect mode is the default when you activate Raval. Hover to see what is under 
 ## How it works
 
 1. Activate Raval (\`Option+Shift+C\` on Mac, \`Alt+Shift+C\` elsewhere).
-2. Hover over the page. Elements are outlined and labelled with \`width × height\`; words of text are highlighted.
+2. Hover over the page. Elements are outlined and labelled with \`width × height\`; words of text are highlighted. An element with rounded corners is outlined along them and its label adds the radius, for example \`200 × 48 · R 24\`. That is the radius as rendered, so a \`9999px\` pill reads as half its height; the Box section of the details panel has the value as written.
 3. Click an element or a word to open its details.
 4. Click it again, click empty space, or press \`Esc\` to close the details.
 
@@ -189,6 +194,15 @@ The panel opens next to what you clicked, with the tag and size at the top and o
 - **Typography** (when you click text) — font, size, weight, line height, and letter spacing, with a **Copy CSS** button.
 - **Colours** — text, background, and border colours in HEX, RGB, or HSL. Press \`F\` to cycle the format.
 - **Box** — margin, border, padding, and corner radius.
+
+## Spacing
+
+Turn on **Show spacing** in the options card, or press \`B\`, and the element you click is drawn with its spacing on it:
+
+- **Padding** in green and **margin** in amber, each side labelled in px.
+- For a flex or grid container, the **gaps between its children** in purple.
+
+Clicking a word shows the spacing of the element that holds it. The setting is off by default and is remembered.
 
 Click any value to copy it. A closed section previews its contents in its header.
 
@@ -245,11 +259,17 @@ Alignment guides are persistent horizontal and vertical lines you can place anyw
 
 1. Switch to Guides mode — press \`3\`.
 2. Move the crosshair to the position you want.
-3. Click anywhere on the page (outside the ruler strip) to drop a **horizontal and vertical guide** at that point.
+3. Click anywhere on the page to drop a **horizontal and vertical guide** at that point. This includes the very edges of the window, embedded frames, and disabled buttons.
 
 ## Moving guides
 
 Drag a guide to reposition it. With **Snap to elements** enabled, both the placement preview and a guide being dragged snap to nearby element edges within 8px, and to elements you have pinned in Measure or marked in Annotate. A click places the guide exactly where the preview line is showing.
+
+## Measuring between guides
+
+Rest the pointer between two parallel guides and the distance between them is drawn along the pointer. Between two vertical guides you get the horizontal gap, between two horizontal guides the vertical gap, and both when you are inside a box of four. Point at a guide, or drag one, to see its distance to the neighbour on each side.
+
+Turn it off with **Measure between guides** in the options card.
 
 ## Removing guides
 
@@ -322,13 +342,14 @@ Switch to Annotate mode with \`4\`, then pick a tool in the options card or by k
 
 - **Size** (\`M\`) — click an element to add its width and height.
 - **Note** (\`N\`) — click to write a note. \`Enter\` saves it, \`Esc\` cancels. Pick the text size (S, M, L, XL) in the options card.
-- **Arrow** (\`A\`) — drag to draw an arrow. Hold \`Shift\` to lock the angle to 15° steps.
-- **Pen** (\`P\`) — draw freehand.
+- **Note** fonts: four handwriting faces (Hand, Marker, Neat, Script) in the options card. They use fonts that come with macOS and Windows, so the exact face depends on the computer.
+- **Arrow** (\`A\`) — drag to draw an arrow. Hold \`Shift\` to lock the angle to 15° steps. **Start** and **End** in the options card set what each end is drawn with: nothing, an arrowhead, a bar, or a dot. Nothing at both ends is a plain line.
+- **Pen** (\`P\`) — draw freehand in four widths. The line thins where you move fast. Hold \`Shift\` for a straight line; click without moving for a dot.
 
 ## Editing
 
 - **Arrows** stay editable: drag either end to re-aim it, drag the middle to bend it into a curve, or drag the line to move it.
-- **Notes** can be dragged to move them; pointing at one shows a delete button on its corner.
+- **Notes** can be dragged to move them; pointing at one shows a delete button on its corner and a handle above it. Drag the handle to rotate the note; hold \`Shift\` to lock to 15° steps.
 - Right-click any annotation to remove it.
 - \`Del\` / \`Backspace\` clears all annotations.
 - \`Cmd+Z\` / \`Ctrl+Z\` undoes the last change.

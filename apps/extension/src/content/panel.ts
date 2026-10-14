@@ -19,23 +19,34 @@ import {
   getGuidePlacement,
   setGuidesVisible,
   setGuideLabelsVisible,
+  setGuideGapsVisible,
   setSnapEnabled,
   type GuidePlacement,
 } from './modes/guides';
 import { setShowRulers } from './renderer';
 import { markActive } from './frame';
+import { setInspectSpacing } from './modes/inspect';
+import { MARK_COLORS, getMarkColor, setMarkColor, onMarkColorChange } from './mark-color';
 import { withChromeHidden } from './capture-chrome';
 import type { SettingKey } from '@raval/shared';
 import {
   clearAnnotations,
   setAnnotateTool,
   getAnnotateTool,
-  setAnnotateColor,
-  getAnnotateColor,
   NOTE_SIZES,
+  PEN_SIZES,
+  getPenSize,
+  setPenSize,
+  NOTE_FONTS,
+  getNoteFont,
+  setNoteFont,
+  type NoteFontId,
+  ARROW_ENDS,
+  getArrowEnd,
+  setArrowEnd,
+  type ArrowEnd,
   getNoteSize,
   setNoteSize,
-  ANNOTATE_COLORS,
   type AnnotateTool,
 } from './modes/annotate';
 import { clearMeasurements } from './modes/measure';
@@ -45,7 +56,7 @@ import { UI, segmentedHTML, setSegmented, swatchHTML, setSwatches } from './toke
 
 const PANEL_ID = 'raval-panel';
 /** Estimate used only before the toolbar has been measured; the real width follows its buttons. */
-const PANEL_WIDTH = 316;
+const PANEL_WIDTH = 344;
 /** Sub-cards are narrower than the toolbar and hang from its right edge, under the buttons that open them. */
 const TRAY_WIDTH = 228;
 const TOKENS_WIDTH = 280;
@@ -125,6 +136,7 @@ const LOGO_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13"
 const SVG_ATTRS = `xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"`;
 
 const MODE_ICONS: Record<string, string> = {
+  browse:      `<svg ${SVG_ATTRS}><path d="M18 11V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2"/><path d="M14 10V4a2 2 0 0 0-2-2a2 2 0 0 0-2 2v2"/><path d="M10 10.5V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/></svg>`,
   inspect:     `<svg ${SVG_ATTRS}><path d="M5 3l5.5 17 2.5-5.5L18.5 12 5 3z"/><path d="M13 14.5l4.5 4.5"/></svg>`,
   measure:     `<svg ${SVG_ATTRS}><rect x="2" y="8" width="20" height="8" rx="1.5"/><line x1="6" y1="8" x2="6" y2="13"/><line x1="10" y1="8" x2="10" y2="11.5"/><line x1="14" y1="8" x2="14" y2="11.5"/><line x1="18" y1="8" x2="18" y2="13"/></svg>`,
   guides:      `<svg ${SVG_ATTRS}><line x1="12" y1="3" x2="12" y2="21"/><line x1="3" y1="12" x2="21" y2="12"/><circle cx="12" cy="12" r="2.5"/></svg>`,
@@ -146,9 +158,10 @@ interface SettingDef {
 }
 
 const MODE_SETTINGS: Record<Mode, SettingDef[]> = {
-  inspect:     [{ id: 'rulers',   label: 'Rulers'          }],
+  browse:      [{ id: 'guides',   label: 'Show guides'     }],
+  inspect:     [{ id: 'spacing',  label: 'Show spacing'    }, { id: 'rulers', label: 'Rulers' }],
   measure:     [{ id: 'rulers',   label: 'Rulers'          }],
-  guides:      [{ id: 'guides', label: 'Show guides' }, { id: 'guideLabels', label: 'Show positions' }, { id: 'snap', label: 'Snap to elements' }, { id: 'rulers', label: 'Rulers' }],
+  guides:      [{ id: 'guides', label: 'Show guides' }, { id: 'guideLabels', label: 'Show positions' }, { id: 'guideGaps', label: 'Measure between guides' }, { id: 'snap', label: 'Snap to elements' }, { id: 'rulers', label: 'Rulers' }],
   annotate:    [{ id: 'rulers',   label: 'Rulers'          }],
 };
 
@@ -159,36 +172,62 @@ const ANNOTATE_TOOLS: { id: AnnotateTool; label: string; key: string }[] = [
   { id: 'pen',     label: 'Pen',   key: 'P' },
 ];
 
-function annotateToolsHTML(active: AnnotateTool, activeColor: string): string {
+function arrowEndRowHTML(side: 'start' | 'end', label: string): string {
+  return `
+    <div style="display:flex;align-items:center;gap:8px;${side === 'end' ? 'margin-top:6px;' : ''}">
+      <span style="width:30px;flex-shrink:0;font-size:11px;color:${T.textSecondary};letter-spacing:-0.01em;">${label}</span>
+      <div style="flex:1;">
+        ${segmentedHTML(`arrow-${side}`, ARROW_ENDS.map((e) => ({ id: e.id, label: e.label, title: `${label}: ${e.label.toLowerCase()}` })), getArrowEnd(side))}
+      </div>
+    </div>
+  `;
+}
+
+function annotateToolsHTML(active: AnnotateTool): string {
   return `
     <div style="margin-bottom:4px;">
       ${segmentedHTML('annotate-tool', ANNOTATE_TOOLS.map((t) => ({ id: t.id, label: t.label, title: `${t.label} (${t.key})` })), active)}
 
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-top:10px;padding:0 3px;height:26px;">
-        ${ANNOTATE_COLORS.map((c) => swatchHTML('annotate-color', c.hex, c.label, c.hex.toLowerCase() === activeColor.toLowerCase())).join('')}
-      </div>
-
       <!-- Text size, shown only for the note tool -->
       <div data-note-size-row style="display:${active === 'note' ? 'block' : 'none'};margin-top:10px;">
         ${segmentedHTML('note-size', NOTE_SIZES.map((n) => ({ id: n.id, label: n.label, title: `${n.px}px` })), String(getNoteSize()))}
+        <!-- Each face is named in itself, so the choice can be seen before it is made -->
+        <div style="margin-top:6px;">
+          ${segmentedHTML('note-font', NOTE_FONTS.map((f) => ({
+            id: f.id,
+            label: `<span style="font-family:${f.stack.replace(/"/g, "'")};font-size:12px;font-weight:600;">${f.label}</span>`,
+            title: `${f.label} handwriting`,
+          })), getNoteFont())}
+        </div>
+      </div>
+
+      <!-- Stroke width, shown only for the pen tool -->
+      <div data-pen-size-row style="display:${active === 'pen' ? 'block' : 'none'};margin-top:10px;">
+        ${segmentedHTML('pen-size', PEN_SIZES.map((n) => ({ id: n.id, label: n.label, title: `${n.px}px` })), String(getPenSize()))}
+      </div>
+
+      <!-- What each end of the line is drawn with, shown only for the arrow tool -->
+      <div data-arrow-ends-row style="display:${active === 'arrow' ? 'block' : 'none'};margin-top:10px;">
+        ${arrowEndRowHTML('start', 'Start')}
+        ${arrowEndRowHTML('end', 'End')}
       </div>
     </div>
   `;
 }
 
 /** Update the annotate controls in place so the tab pill slides instead of being rebuilt. */
-function updateAnnotateUi(tool: AnnotateTool, color: string): void {
+function updateAnnotateUi(tool: AnnotateTool): void {
   if (!panelEl) return;
   setSegmented(panelEl, 'annotate-tool', tool);
-  setSwatches(panelEl, 'annotate-color', color);
 
-  // The size row comes and goes with the note tool; keep the card inset as its height changes.
-  const sizeRow = panelEl.querySelector<HTMLElement>('[data-note-size-row]');
-  const show = tool === 'note';
-  if (sizeRow && (sizeRow.style.display !== 'none') !== show) {
-    const prevBox = snapshotPanelBox();
-    sizeRow.style.display = show ? 'block' : 'none';
-    schedulePanelReadjust(prevBox);
+  // The size row comes and goes with the note tool, the ends rows with the arrow tool;
+  // keep the card inset as its height changes.
+  for (const [selector, show] of [['[data-note-size-row]', tool === 'note'], ['[data-arrow-ends-row]', tool === 'arrow'], ['[data-pen-size-row]', tool === 'pen']] as const) {
+    const row = panelEl.querySelector<HTMLElement>(selector);
+    if (row && (row.style.display !== 'none') !== show) {
+      row.style.display = show ? 'block' : 'none';
+      schedulePanelReadjust();
+    }
   }
 }
 
@@ -254,7 +293,9 @@ function getSettingValue(state: ExtensionState, id: string): boolean {
   switch (id) {
     case 'guides':      return state.showGuides;
     case 'guideLabels': return state.showGuideLabels;
+    case 'guideGaps':   return state.showGuideGaps;
     case 'rulers':      return state.showRulers;
+    case 'spacing':     return state.showSpacing;
     case 'snap':        return state.snapToElements;
     default:            return false;
   }
@@ -405,11 +446,12 @@ function trayContentHTML(state: ExtensionState): string {
   const showAnnotate = state.mode === 'annotate';
   const showGuides = state.mode === 'guides';
   return `
+    <!-- The colour everything on the page is drawn in, whatever the tool -->
+    <div data-mark-colors style="display:flex;align-items:center;justify-content:space-between;padding:0 3px;height:26px;margin-bottom:8px;">
+      ${MARK_COLORS.map((c) => swatchHTML('mark-color', c.hex, c.label, c.hex.toLowerCase() === getMarkColor().toLowerCase())).join('')}
+    </div>
     <div data-annotate-tools style="display:${showAnnotate ? 'block' : 'none'};margin-bottom:${showAnnotate ? '8px' : '0'};">
-      ${annotateToolsHTML(
-        showAnnotate ? getAnnotateTool() : 'measure',
-        showAnnotate ? getAnnotateColor() : ANNOTATE_COLORS[0]!.hex,
-      )}
+      ${annotateToolsHTML(showAnnotate ? getAnnotateTool() : 'measure')}
     </div>
     <div data-guide-tools style="display:${showGuides ? 'block' : 'none'};margin-bottom:${showGuides ? '8px' : '0'};">
       ${guideToolsHTML(getGuidePlacement())}
@@ -446,6 +488,7 @@ function moreMenuHTML(): string {
 
 function buildPanelHTML(state: ExtensionState): string {
   const modes: { id: Mode; label: string; key: number }[] = [
+    { id: 'browse',      label: 'Browse',   key: 0 },
     { id: 'inspect',     label: 'Inspect',  key: 1 },
     { id: 'measure',     label: 'Measure',  key: 2 },
     { id: 'guides',      label: 'Guides',   key: 3 },
@@ -571,7 +614,6 @@ function setToolBtnActive(btn: HTMLElement, active: boolean): void {
 function updateModeOnly(mode: Mode): void {
   if (!panelEl) return;
 
-  const prevBox = snapshotPanelBox();
 
   panelEl.querySelectorAll<HTMLElement>('[data-mode]').forEach((btn) => {
     setToolBtnActive(btn, btn.dataset['mode'] === mode);
@@ -582,7 +624,7 @@ function updateModeOnly(mode: Mode): void {
     const on = mode === 'annotate';
     toolsWrap.style.display = on ? 'block' : 'none';
     toolsWrap.style.marginBottom = on ? '8px' : '0';
-    if (on) toolsWrap.innerHTML = annotateToolsHTML(getAnnotateTool(), getAnnotateColor());
+    if (on) toolsWrap.innerHTML = annotateToolsHTML(getAnnotateTool());
   }
 
   const guideTools = panelEl.querySelector<HTMLElement>('[data-guide-tools]');
@@ -595,7 +637,7 @@ function updateModeOnly(mode: Mode): void {
 
   updateSettingRows(mode);
   updateTrayVisibility(mode);
-  schedulePanelReadjust(prevBox);
+  schedulePanelReadjust();
 }
 
 /** Shared enter/exit: fade + 4px slide + slight scale and blur. Exit is quicker than enter. */
@@ -665,12 +707,11 @@ function applyTray(): void {
   if (!tray) return;
 
   const show = trayOpen && currentView === 'main';
-  const prevBox = snapshotPanelBox();
   if (show) {
     setPresence(tray, true);
-    schedulePanelReadjust(prevBox);
+    schedulePanelReadjust();
   } else {
-    setPresence(tray, false, () => schedulePanelReadjust(prevBox));
+    setPresence(tray, false, () => schedulePanelReadjust());
   }
 }
 
@@ -763,14 +804,21 @@ function renderTokenRows(): void {
 /** What each settings toggle controls. */
 const TOGGLES: Record<string, {
   key: SettingKey;
-  message: 'TOGGLE_GUIDES' | 'TOGGLE_GUIDE_LABELS' | 'TOGGLE_RULERS' | 'TOGGLE_SNAP';
+  message: 'TOGGLE_GUIDES' | 'TOGGLE_GUIDE_LABELS' | 'TOGGLE_GUIDE_GAPS' | 'TOGGLE_RULERS' | 'TOGGLE_SPACING' | 'TOGGLE_SNAP';
   apply: (enabled: boolean) => void;
 }> = {
   guides:      { key: 'showGuides',      message: 'TOGGLE_GUIDES',       apply: setGuidesVisible },
   guideLabels: { key: 'showGuideLabels', message: 'TOGGLE_GUIDE_LABELS', apply: setGuideLabelsVisible },
+  guideGaps:   { key: 'showGuideGaps',   message: 'TOGGLE_GUIDE_GAPS',   apply: setGuideGapsVisible },
   rulers:      { key: 'showRulers',      message: 'TOGGLE_RULERS',       apply: setShowRulers },
+  spacing:     { key: 'showSpacing',     message: 'TOGGLE_SPACING',      apply: setInspectSpacing },
   snap:        { key: 'snapToElements',  message: 'TOGGLE_SNAP',         apply: setSnapEnabled },
 };
+
+// Wherever the colour is changed from (a swatch, a shortcut, a saved choice), the swatches follow.
+onMarkColorChange((hex) => {
+  if (panelEl) setSwatches(panelEl, 'mark-color', hex);
+});
 
 /** Switches the mode inside this page. Provided by the content script entry point. */
 let switchModeLocally: ((mode: Mode) => void) | null = null;
@@ -857,7 +905,6 @@ function switchView(view: 'main' | 'tokens'): void {
   const card = panelEl.querySelector<HTMLElement>('[data-tokens-card]');
   if (!card) return;
 
-  const prevBox = snapshotPanelBox();
   setMoreMenuOpen(false);
 
   if (view === 'tokens') {
@@ -891,7 +938,7 @@ function switchView(view: 'main' | 'tokens'): void {
     applyTray();
   }
 
-  schedulePanelReadjust(prevBox);
+  schedulePanelReadjust();
 }
 
 // ─── Event wiring ─────────────────────────────────────────────────────────────
@@ -1015,6 +1062,14 @@ function wireEvents(panel: HTMLElement): void {
   };
   document.addEventListener('mousedown', onDocPointerDown);
 
+  // A button pressed with the mouse should not hold on to keyboard focus: the next shortcut key
+  // would light its focus ring up, on a control the pointer has long since left. Buttons worked
+  // from the keyboard (detail 0) keep focus as usual.
+  panel.addEventListener('click', (e) => {
+    const focused = document.activeElement;
+    if (e.detail > 0 && focused instanceof HTMLButtonElement && panel.contains(focused)) focused.blur();
+  });
+
   panel.addEventListener('click', async (e) => {
     const target = e.target as HTMLElement;
 
@@ -1107,7 +1162,7 @@ function wireEvents(panel: HTMLElement): void {
       const tool = annToolBtn.dataset['annotateTool'] as AnnotateTool;
       setAnnotateTool(tool);
       const wrap = panel.querySelector<HTMLElement>('[data-annotate-tools]');
-      if (wrap) updateAnnotateUi(tool, getAnnotateColor());
+      if (wrap) updateAnnotateUi(tool);
       return;
     }
 
@@ -1119,14 +1174,36 @@ function wireEvents(panel: HTMLElement): void {
       return;
     }
 
-    const annColorBtn = target.closest('[data-annotate-color]') as HTMLElement | null;
-    if (annColorBtn) {
-      const hex = annColorBtn.dataset['annotateColor'];
-      if (hex) {
-        setAnnotateColor(hex);
-        const wrap = panel.querySelector<HTMLElement>('[data-annotate-tools]');
-        if (wrap) updateAnnotateUi(getAnnotateTool(), hex);
-      }
+    const penSizeBtn = target.closest('[data-pen-size]') as HTMLElement | null;
+    if (penSizeBtn) {
+      const id = penSizeBtn.dataset['penSize'] ?? '';
+      setPenSize(Number(id));
+      setSegmented(panel, 'pen-size', id);
+      return;
+    }
+
+    const noteFontBtn = target.closest('[data-note-font]') as HTMLElement | null;
+    if (noteFontBtn) {
+      const id = (noteFontBtn.dataset['noteFont'] ?? 'hand') as NoteFontId;
+      setNoteFont(id);
+      setSegmented(panel, 'note-font', id);
+      return;
+    }
+
+    for (const side of ['start', 'end'] as const) {
+      const endBtn = target.closest<HTMLElement>(`[data-arrow-${side}]`);
+      if (!endBtn) continue;
+      const kind = endBtn.getAttribute(`data-arrow-${side}`) as ArrowEnd;
+      setArrowEnd(side, kind);
+      setSegmented(panel, `arrow-${side}`, kind);
+      return;
+    }
+
+    const markColorBtn = target.closest('[data-mark-color]') as HTMLElement | null;
+    if (markColorBtn) {
+      const hex = markColorBtn.dataset['markColor'];
+      // The swatches follow through the change listener below.
+      if (hex) setMarkColor(hex);
       return;
     }
 
@@ -1143,7 +1220,9 @@ function wireEvents(panel: HTMLElement): void {
     // Mode tabs
     const modeBtn = target.closest('[data-mode]') as HTMLElement | null;
     if (modeBtn) {
-      const mode = modeBtn.dataset['mode'] as Mode;
+      const picked = modeBtn.dataset['mode'] as Mode;
+      // Pressing the tool that is already on puts it down.
+      const mode: Mode = localState.active && picked === localState.mode ? 'browse' : picked;
       if (!localState.active) {
         localState = await sendMsg({ type: 'ACTIVATE', mode });
         localState.active = true;
@@ -1205,76 +1284,86 @@ function clampPanelPosition(left: number, top: number, w: number, h: number): Pa
   };
 }
 
-interface PanelBox {
-  left: number;
-  top: number;
-  w: number;
-  h: number;
-}
+/**
+ * Where the user left the toolbar, as the spot its pill rests at. The options
+ * card and the tokens view make the panel taller, which can push the pill away
+ * from that spot; when they close it goes back. An edge it was docked to stays
+ * docked whatever the panel's size.
+ */
+interface PanelHome { left: number; top: number; dockRight: boolean; dockBottom: boolean }
 
-function snapshotPanelBox(): PanelBox | null {
-  if (!panelEl) return null;
-  const left = parseFloat(panelEl.style.left);
-  const top = parseFloat(panelEl.style.top);
-  if (!Number.isFinite(left) || !Number.isFinite(top)) return null;
-  return {
-    left,
-    top,
-    w: panelEl.offsetWidth,
-    h: panelEl.offsetHeight,
+let panelHome: PanelHome | null = null;
+const DOCK_SLOP = 2;
+/** Height of the toolbar pill on its own, with no card open under it. */
+const PILL_HEIGHT = 40;
+
+/** Record a resting spot the user chose, for a panel that is `w` × `h` at that moment. */
+function setPanelHome(pos: PanelPosition, w: number, h: number): void {
+  panelHome = {
+    left: pos.left,
+    top: pos.top,
+    dockRight: pos.left >= window.innerWidth - w - PANEL_INSET - DOCK_SLOP,
+    dockBottom: pos.top >= window.innerHeight - h - PANEL_INSET - DOCK_SLOP,
   };
 }
 
+/** Saved as the pill's own resting spot, so it means the same whatever was open when it was dropped. */
+function savePanelHome(): void {
+  if (!panelHome) return;
+  savePanelPosition({
+    left: panelHome.left,
+    top: panelHome.dockBottom ? window.innerHeight - PILL_HEIGHT - PANEL_INSET : panelHome.top,
+  });
+}
+
+/** Where a panel of this size belongs, given where the user left it. */
+function panelRestPosition(w: number, h: number): PanelPosition | null {
+  if (!panelHome) return null;
+  return clampPanelPosition(
+    panelHome.dockRight ? window.innerWidth - w - PANEL_INSET : panelHome.left,
+    panelHome.dockBottom ? window.innerHeight - h - PANEL_INSET : panelHome.top,
+    w,
+    h,
+  );
+}
+
+/** The panel's height once things settle: a card that is fading out no longer counts. */
+function settledPanelHeight(panel: HTMLElement): number {
+  const tray = panel.querySelector<HTMLElement>('[data-tray]');
+  const closing = tray !== null && tray.dataset['open'] === 'false' && tray.style.display !== 'none';
+  const pill = panel.querySelector<HTMLElement>('[data-main-card]');
+  return closing && pill ? pill.offsetHeight : panel.offsetHeight;
+}
+
 /**
- * After the panel grows/shrinks (mode switch, tokens view), keep the
- * PANEL_INSET from the viewport. Mode changes only grow height — re-anchor
- * top/bottom edges so a bottom-docked panel stays inset when it gets taller.
- * Horizontal position is left alone unless width actually changed.
+ * After the panel grows or shrinks (mode switch, options card, tokens view) or
+ * the window is resized, glide to where a panel of the new size belongs.
  */
-function readjustPanelForSizeChange(prev: PanelBox | null): void {
-  if (!panelEl || !prev) return;
+function readjustPanelForSizeChange(): void {
+  if (!panelEl) return;
+  const h = settledPanelHeight(panelEl);
+  const target = panelRestPosition(panelEl.offsetWidth, h);
+  if (!target) return;
 
-  const w = panelEl.offsetWidth;
-  const h = panelEl.offsetHeight;
-  const maxLPrev = Math.max(PANEL_INSET, window.innerWidth - prev.w - PANEL_INSET);
-  const maxTPrev = Math.max(PANEL_INSET, window.innerHeight - prev.h - PANEL_INSET);
-  const edgeSlop = 2;
+  // Already on its way there: restarting the spring would only stall it.
+  const heading = panelSpringTarget;
+  if (heading && Math.abs(heading.left - target.left) <= 1 && Math.abs(heading.top - target.top) <= 1) return;
 
-  const stickLeft = prev.left <= PANEL_INSET + edgeSlop;
-  const stickRight = prev.left >= maxLPrev - edgeSlop;
-  const stickTop = prev.top <= PANEL_INSET + edgeSlop;
-  const stickBottom = prev.top >= maxTPrev - edgeSlop;
-
-  let left = prev.left;
-  let top = prev.top;
-
-  // Width is fixed for mode switches — only re-anchor horizontally if it changed
-  // (e.g. window resize) or we were already edge-docked and must preserve inset.
-  if (w !== prev.w || stickRight || stickLeft) {
-    if (stickRight) left = window.innerWidth - w - PANEL_INSET;
-    else if (stickLeft) left = PANEL_INSET;
-  }
-
-  if (stickBottom) top = window.innerHeight - h - PANEL_INSET;
-  else if (stickTop) top = PANEL_INSET;
-
-  const target = clampPanelPosition(left, top, w, h);
   const curL = parseFloat(panelEl.style.left);
   const curT = parseFloat(panelEl.style.top);
   if (!Number.isFinite(curL) || !Number.isFinite(curT)) {
     applyPanelPosition(panelEl, target);
     return;
   }
-
-  if (Math.abs(target.left - curL) > 1 || Math.abs(target.top - curT) > 1) {
-    animatePanelTo(panelEl, target);
+  if (heading || Math.abs(target.left - curL) > 1 || Math.abs(target.top - curT) > 1) {
+    springPanelTo(panelEl, target, undefined, h);
   }
 }
 
-/** Wait for layout after DOM/size changes, then edge-aware readjust. */
-function schedulePanelReadjust(prev: PanelBox | null): void {
+/** Wait for layout after DOM/size changes, then readjust. */
+function schedulePanelReadjust(): void {
   requestAnimationFrame(() => {
-    requestAnimationFrame(() => readjustPanelForSizeChange(prev));
+    requestAnimationFrame(() => readjustPanelForSizeChange());
   });
 }
 
@@ -1332,10 +1421,13 @@ function rubberbandPanelPosition(left: number, top: number, w: number, h: number
 }
 
 let activePanelSpring: { cancel: () => void } | null = null;
+/** Where the running spring is taking the panel. */
+let panelSpringTarget: PanelPosition | null = null;
 
 function cancelPanelSpring(): void {
   activePanelSpring?.cancel();
   activePanelSpring = null;
+  panelSpringTarget = null;
 }
 
 /**
@@ -1346,22 +1438,24 @@ function springPanelTo(
   panel: HTMLElement,
   target: PanelPosition,
   velocity: { vx: number; vy: number } = { vx: 0, vy: 0 },
+  /** Height to keep on screen, when it is not the panel's height right now (a card is closing). */
+  height = panel.offsetHeight || 48,
 ): void {
   cancelPanelSpring();
   clearSnapTransition(panel);
 
-  const clamped = clampPanelPosition(
-    target.left,
-    target.top,
-    panel.offsetWidth || PANEL_WIDTH,
-    panel.offsetHeight || 48,
-  );
+  const clamped = clampPanelPosition(target.left, target.top, panel.offsetWidth || PANEL_WIDTH, height);
+  const land = (): void => {
+    panel.style.left = `${clamped.left}px`;
+    panel.style.top = `${clamped.top}px`;
+    panel.style.right = 'auto';
+  };
 
   if (prefersReducedMotion()) {
-    applyPanelPosition(panel, clamped);
-    savePanelPosition(clamped);
+    land();
     return;
   }
+  panelSpringTarget = clamped;
 
   let x = parseFloat(panel.style.left) || 0;
   let y = parseFloat(panel.style.top) || 0;
@@ -1393,9 +1487,9 @@ function springPanelTo(
       Math.hypot(vx, vy) < 12;
 
     if (settled) {
-      applyPanelPosition(panel, clamped);
-      savePanelPosition(clamped);
+      land();
       activePanelSpring = null;
+      panelSpringTarget = null;
       return;
     }
     raf = requestAnimationFrame(tick);
@@ -1412,10 +1506,6 @@ function springPanelTo(
 
 function clearSnapTransition(panel: HTMLElement): void {
   panel.style.transition = '';
-}
-
-function animatePanelTo(panel: HTMLElement, target: PanelPosition): void {
-  springPanelTo(panel, target);
 }
 
 /**
@@ -1453,11 +1543,8 @@ function resolveDropPosition(
 
 function onPanelViewportResize(): void {
   if (!panelEl) return;
-  const prev = snapshotPanelBox();
-  if (!prev) return;
-  // Instant clamp on window resize — no size-change anchor needed beyond clamp,
-  // but preserve edge stickiness when the window shrinks under a corner-docked panel.
-  readjustPanelForSizeChange(prev);
+  // A docked panel stays docked; a free one stays put unless the window no longer has room for it.
+  readjustPanelForSizeChange();
 }
 
 function midTouch(touches: TouchList): { x: number; y: number } {
@@ -1546,11 +1633,10 @@ function wireDrag(panel: HTMLElement): void {
       Math.abs(target.top - top) > 0.5 ||
       Math.hypot(vx, vy) >= 0.08;
 
-    if (needsSpring) {
-      springPanelTo(panel, target, { vx, vy });
-    } else {
-      savePanelPosition({ left: target.left, top: target.top });
-    }
+    // Wherever it is let go is where it lives from now on.
+    setPanelHome(target, panel.offsetWidth, panel.offsetHeight);
+    savePanelHome();
+    if (needsSpring) springPanelTo(panel, target, { vx, vy });
   };
 
   // ── Mouse / trackpad: drag by header grip / brand ─────────────────────────
@@ -1641,30 +1727,21 @@ export async function showPanel(): Promise<void> {
   document.documentElement.appendChild(panel);
   panelEl = panel;
 
-  // Re-clamp / recenter now that real width is known
-  if (saved) {
-    applyPanelPosition(panel, {
-      left: parseFloat(panel.style.left),
-      top:  parseFloat(panel.style.top),
-    });
-  } else {
-    applyPanelPosition(panel, defaultPanelPosition(panel.offsetWidth, panel.offsetHeight));
-  }
+  // Now that the real size is known: the saved spot is the pill's, so read it as a pill-sized
+  // panel, then place the panel (which may open with a card under it) where that puts it.
+  const placeAtHome = (): void => {
+    setPanelHome(saved ?? defaultPanelPosition(panel.offsetWidth, PILL_HEIGHT), panel.offsetWidth, PILL_HEIGHT);
+    const rest = panelRestPosition(panel.offsetWidth, panel.offsetHeight);
+    if (rest) applyPanelPosition(panel, rest);
+  };
+  placeAtHome();
 
   wireEvents(panel);
   wireDrag(panel);
   window.addEventListener('resize', onPanelViewportResize);
 
   requestAnimationFrame(() => {
-    if (!panelEl) return;
-    if (!saved) {
-      applyPanelPosition(panelEl, defaultPanelPosition(panelEl.offsetWidth, panelEl.offsetHeight));
-    } else {
-      applyPanelPosition(panelEl, {
-        left: parseFloat(panelEl.style.left),
-        top:  parseFloat(panelEl.style.top),
-      });
-    }
+    if (panelEl === panel) placeAtHome();
   });
 }
 
@@ -1711,12 +1788,16 @@ export function reflectMode(mode: Mode): void {
   localState.mode = mode;
   if (currentView === 'tokens') switchView('main');
   updateModeOnly(mode);
+  // A toolbar button clicked earlier still has focus, and a key press makes its focus ring
+  // show: it would sit on the old tool while the highlight moves to the new one.
+  const focused = document.activeElement;
+  if (focused instanceof HTMLElement && panelEl.contains(focused)) focused.blur();
 }
 
 /** Show a setting change that happened outside the toolbar (keyboard shortcut). */
-export function reflectSetting(key: 'showRulers', value: boolean): void {
+export function reflectSetting(key: 'showRulers' | 'showSpacing', value: boolean): void {
   localState[key] = value;
-  updateToggleOnly('rulers', value);
+  updateToggleOnly(key === 'showRulers' ? 'rulers' : 'spacing', value);
 }
 
 /** Close whatever is temporarily open on the toolbar. Returns false when there was nothing to close. */

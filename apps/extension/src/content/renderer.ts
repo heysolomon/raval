@@ -2,15 +2,9 @@
  * Renderer — draws highlights, dimension lines, measurement labels onto the canvas.
  * All coordinates are in CSS pixels; we apply DPR scaling at the start of each frame.
  */
-import type { Rect } from '@raval/shared';
+import type { Rect, CornerRadii } from '@raval/shared';
 import { tuning } from './motion';
-
-// ─── Design tokens (mirrors popup / branding) ─────────────────────────────────
-
-const C = {
-  primary: '#FF4500',
-  primaryAlpha80: 'rgba(255, 69, 0, 0.8)',
-};
+import { getMarkColor, markRgba, onMarkColor } from './mark-color';
 
 // ─── Module state ─────────────────────────────────────────────────────────────
 
@@ -31,7 +25,7 @@ function roundedRect(
   y: number,
   w: number,
   h: number,
-  r: number,
+  r: number | DOMPointInit[],
 ): void {
   ctx.beginPath();
   ctx.roundRect(x, y, w, h, r);
@@ -59,25 +53,37 @@ function hexToRgb(hex: string): string {
  * The one element highlight every mode shares.
  * Hover: soft fill with a thin border. Selected (clicked / pinned): the same
  * shape with a darker fill and a solid, heavier border.
+ * Pass `radii` to trace the element's own corners instead of the default ones.
  */
 export function drawElementHighlight(
   ctx: CanvasRenderingContext2D,
   rect: Rect,
   selected = false,
   opacity = 1,
-  color = C.primary,
+  color = getMarkColor(),
+  radii: CornerRadii | null = null,
+  /** Leave the inside clear, for when something else (the spacing bands) is drawn there. */
+  outlineOnly = false,
 ): void {
   scale(ctx);
   ctx.globalAlpha = opacity;
   const rgb = hexToRgb(color);
+  // Square corners keep the default softening; rounded ones are followed exactly.
+  const r = radii
+    ? [radii.topLeft, radii.topRight, radii.bottomRight, radii.bottomLeft].map((c) => ({
+      x: Math.max(tuning.radius, c.x), y: Math.max(tuning.radius, c.y),
+    }))
+    : tuning.radius;
 
-  ctx.fillStyle = `rgba(${rgb},${selected ? tuning.selectedFillAlpha : tuning.fillAlpha})`;
-  roundedRect(ctx, rect.x, rect.y, rect.width, rect.height, tuning.radius);
-  ctx.fill();
+  if (!outlineOnly) {
+    ctx.fillStyle = `rgba(${rgb},${selected ? tuning.selectedFillAlpha : tuning.fillAlpha})`;
+    roundedRect(ctx, rect.x, rect.y, rect.width, rect.height, r);
+    ctx.fill();
+  }
 
   ctx.strokeStyle = `rgba(${rgb},${selected ? 1 : tuning.strokeAlpha})`;
   ctx.lineWidth = selected ? 1.5 : 1;
-  roundedRect(ctx, rect.x, rect.y, rect.width, rect.height, tuning.radius);
+  roundedRect(ctx, rect.x, rect.y, rect.width, rect.height, r);
   ctx.stroke();
 
   ctx.globalAlpha = 1;
@@ -95,12 +101,14 @@ export function drawColorPickHighlight(
   selected = false,
   /** Tint the word here because the browser cannot recolour the text itself. */
   tintText = false,
+  radii: CornerRadii | null = null,
+  outlineOnly = false,
 ): void {
   if (!isText) {
     drawElementHighlight(ctx, {
       x: rect.x, y: rect.y, width: rect.w, height: rect.h,
       left: rect.x, top: rect.y, right: rect.x + rect.w, bottom: rect.y + rect.h,
-    }, selected, rect.opacity);
+    }, selected, rect.opacity, undefined, radii, outlineOnly);
     return;
   }
 
@@ -108,10 +116,10 @@ export function drawColorPickHighlight(
   ctx.globalAlpha = rect.opacity;
   roundedRect(ctx, rect.x, rect.y, rect.w, rect.h, tuning.radius + 1);
   if (tintText) {
-    ctx.fillStyle = `rgba(255,69,0,${selected ? 0.28 : 0.2})`;
+    ctx.fillStyle = markRgba(selected ? 0.28 : 0.2);
     ctx.fill();
   }
-  ctx.strokeStyle = selected ? C.primary : C.primaryAlpha80;
+  ctx.strokeStyle = selected ? getMarkColor() : markRgba(0.8);
   ctx.lineWidth = 1.5;
   ctx.stroke();
   ctx.globalAlpha = 1;
@@ -128,13 +136,13 @@ export function drawBadge(ctx: CanvasRenderingContext2D, x: number, y: number, l
 
   ctx.beginPath();
   ctx.arc(cx, cy, r, 0, Math.PI * 2);
-  ctx.fillStyle = C.primary;
+  ctx.fillStyle = getMarkColor();
   ctx.fill();
   ctx.strokeStyle = '#fff';
   ctx.lineWidth = 1.5;
   ctx.stroke();
 
-  ctx.fillStyle = '#fff';
+  ctx.fillStyle = onMarkColor();
   ctx.font = '600 10px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
@@ -172,7 +180,7 @@ export function drawMeasurementLine(
   const isHorizontal = Math.abs(y2 - y1) < 2;
   const capSize = 4;
 
-  ctx.strokeStyle = 'rgba(255, 69, 0, 0.8)';
+  ctx.strokeStyle = markRgba(0.8);
   ctx.lineWidth = 1.5;
   ctx.lineCap = 'round';
 
@@ -193,6 +201,56 @@ export function drawMeasurementLine(
   cap(x2, y2, endCap);
 }
 
+/**
+ * Distance between two parallel guides: a capped line across the gap with the
+ * value beside it. Drawn on the canvas, not as a label, so it can never sit
+ * under the pointer and take a click meant for the page.
+ */
+export function drawGuideGap(
+  ctx: CanvasRenderingContext2D,
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+  text: string,
+  /** For a vertical gap: the row another gap's line and label run along, to keep this label clear of. */
+  avoidY?: number,
+): void {
+  drawMeasurementLine(ctx, x1, y1, x2, y2);
+
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const horizontal = Math.abs(y2 - y1) < 2;
+  ctx.font = `500 11px 'JetBrains Mono', 'SF Mono', ui-monospace, monospace`;
+  const w = Math.ceil(ctx.measureText(text).width) + 12;
+  const h = 18;
+  const clamp = (v: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, v));
+
+  // Centred on the part of the gap that is on screen; under a horizontal gap, left of a vertical one.
+  let cx: number;
+  let cy: number;
+  if (horizontal) {
+    cx = (clamp(Math.min(x1, x2), 0, vw) + clamp(Math.max(x1, x2), 0, vw)) / 2;
+    cy = y1 + 8 + h / 2 > vh - 4 ? y1 - 8 - h / 2 : y1 + 8 + h / 2;
+  } else {
+    cy = (clamp(Math.min(y1, y2), 0, vh) + clamp(Math.max(y1, y2), 0, vh)) / 2;
+    // Between four guides both gaps meet at the pointer; step this label above the crossing.
+    if (avoidY !== undefined && cy > avoidY - h - 6 && cy < avoidY + 34) cy = avoidY - h - 6;
+    cx = x1 - 8 - w / 2 < 4 ? x1 + 8 + w / 2 : x1 - 8 - w / 2;
+  }
+  const left = Math.round(clamp(cx - w / 2, 4, vw - w - 4));
+  const top = Math.round(clamp(cy - h / 2, 4, vh - h - 4));
+
+  ctx.beginPath();
+  ctx.roundRect(left, top, w, h, 5);
+  ctx.fillStyle = getMarkColor();
+  ctx.fill();
+  ctx.fillStyle = onMarkColor();
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, left + w / 2, top + h / 2 + 0.5);
+}
+
 /** Draw dashed alignment guideline extending from an element edge */
 export function drawAlignmentGuideline(
   ctx: CanvasRenderingContext2D,
@@ -202,7 +260,7 @@ export function drawAlignmentGuideline(
   y2: number,
 ): void {
   scale(ctx);
-  ctx.strokeStyle = 'rgba(255, 69, 0, 0.25)';
+  ctx.strokeStyle = markRgba(0.25);
   ctx.lineWidth = 1;
   ctx.setLineDash([4, 4]);
   ctx.beginPath();
@@ -225,7 +283,7 @@ export function drawGuide(
   const h = window.innerHeight;
 
   const amount = typeof emphasis === 'number' ? Math.max(0, Math.min(1, emphasis)) : emphasis ? 1 : 0;
-  ctx.strokeStyle = `rgba(255, 69, 0, ${0.5 + 0.3 * amount})`;
+  ctx.strokeStyle = markRgba(0.5 + 0.3 * amount);
   ctx.lineWidth = 1;
 
   ctx.beginPath();
@@ -307,7 +365,7 @@ export function drawRulers(
 
   // Cursor crosshair highlights on the rulers
   if (mouseX > R && mouseY > R) {
-    ctx.fillStyle = 'rgba(255,69,0,0.9)';
+    ctx.fillStyle = markRgba(0.9);
     ctx.fillRect(mouseX - 0.5, 0, 1, R);
     ctx.fillRect(0, mouseY - 0.5, R, 1);
   }
@@ -327,7 +385,7 @@ export function drawViewportDistances(
   const vh = window.innerHeight;
   const R  = RULER_SIZE;
 
-  ctx.strokeStyle = 'rgba(255,69,0,0.3)';
+  ctx.strokeStyle = markRgba(0.3);
   ctx.lineWidth = 1;
   ctx.setLineDash([3, 5]);
 

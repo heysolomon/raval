@@ -3,8 +3,8 @@
  * Placed guides live on the persist layer and survive mode switches until cleared.
  */
 import type { Guide } from '@raval/shared';
-import type { OverlayElements } from '../overlay';
-import { clearCanvas, drawGuide, drawRulers, RULER_SIZE } from '../renderer';
+import { PASS_THROUGH_CLASS, type OverlayElements } from '../overlay';
+import { clearCanvas, drawGuide, drawGuideGap, drawRulers, RULER_SIZE } from '../renderer';
 import { setLabel, hideLabel, removeLabel, showToast } from '../labels';
 import { formatDistance, uid, isRavalElement, toPageX, toPageY, toViewX, toViewY } from '../utils';
 import { loadGuides, saveGuides, guidePageKey } from '../storage';
@@ -31,6 +31,7 @@ interface GuidesState {
   interactive: boolean;
   visible: boolean;
   showLabels: boolean;
+  showGaps: boolean;
 }
 
 const state: GuidesState = {
@@ -45,11 +46,11 @@ const state: GuidesState = {
   interactive: false,
   visible: true,
   showLabels: false,
+  showGaps: true,
 };
 
 const HANDLE_HIT = 16;
 const SNAP_THRESHOLD = 8;
-const SNAP_SAMPLE_STEP = 48;
 
 let overlay: OverlayElements | null = null;
 let stopLoop: (() => void) | null = null;
@@ -134,6 +135,11 @@ export function isGuideLabelsVisible(): boolean {
   return state.showLabels;
 }
 
+export function setGuideGapsVisible(visible: boolean): void {
+  state.showGaps = visible;
+  markActive();
+}
+
 export function setGuidePlacement(placement: GuidePlacement): void {
   state.placement = placement;
 }
@@ -187,6 +193,7 @@ export async function initGuidesMode(o: OverlayElements, snapEnabled = true): Pr
     if (dragged && press?.moved) return dragged.axis === 'horizontal' ? 'move-y' : 'move-x';
     return state.hoveredId || state.draggingId ? 'delete' : 'crosshair';
   });
+  document.documentElement.classList.add(PASS_THROUGH_CLASS);
   document.addEventListener('click', onClick, true);
   document.addEventListener('mousemove', onMouseMove, { passive: true });
   document.addEventListener('mousedown', onMouseDown, true);
@@ -208,6 +215,8 @@ export function destroyGuidesMode(): void {
   press = null;
   swallowClick = false;
   unarmed.clear();
+  document.documentElement.classList.remove(PASS_THROUGH_CLASS);
+  edgeCache = null;
   document.removeEventListener('click', onClick, true);
   document.removeEventListener('mousemove', onMouseMove);
   document.removeEventListener('mousedown', onMouseDown, true);
@@ -321,72 +330,91 @@ export function paintPlacedGuides(
 }
 
 // ─── Snap logic ───────────────────────────────────────────────────────────────
+// Snapping runs on every frame the pointer moves, so it must be cheap. The edges
+// of everything in the viewport are read once and kept for a moment; finding the
+// nearest one is then a search in a sorted list, with a single hit-test to
+// confirm the winner is really there (not clipped away or untouchable).
 
-function collectSnapCandidates(
-  axis: 'horizontal' | 'vertical',
-  rawPosition: number,
-  mouseX: number,
-  mouseY: number,
-): Set<Element> {
-  const candidates = new Set<Element>();
+interface Edge { at: number; el: Element; rect: DOMRect; leading: boolean }
+interface EdgeCache { t: number; sx: number; sy: number; vw: number; vh: number; h: Edge[]; v: Edge[] }
+
+/** How long a reading of the page's edges is trusted while nothing has scrolled. */
+const EDGE_CACHE_MS = 400;
+/** Never re-read more often than this, even mid-scroll. */
+const EDGE_REBUILD_MIN_MS = 120;
+/** Click-through while placing (see PASS_THROUGH_CLASS), so they cannot be confirmed by a hit-test. */
+const PASS_THROUGH = 'iframe, embed, object, :disabled';
+const MAX_CONFIRMS = 4;
+
+let edgeCache: EdgeCache | null = null;
+
+function readEdges(): EdgeCache {
   const vw = window.innerWidth;
   const vh = window.innerHeight;
-  const band = [-SNAP_THRESHOLD, 0, SNAP_THRESHOLD];
-
-  const addAt = (x: number, y: number): void => {
-    if (x < 0 || y < 0 || x >= vw || y >= vh) return;
-    for (const el of document.elementsFromPoint(x, y)) {
-      if (!isRavalElement(el) && el !== document.documentElement && el !== document.body) {
-        candidates.add(el);
-      }
-    }
-  };
-
-  for (const off of band) {
-    if (axis === 'horizontal') addAt(mouseX + off, rawPosition);
-    else addAt(rawPosition, mouseY + off);
+  const h: Edge[] = [];
+  const v: Edge[] = [];
+  for (const el of document.body?.getElementsByTagName('*') ?? []) {
+    const r = el.getBoundingClientRect();
+    if (r.width < 1 || r.height < 1) continue;
+    if (r.bottom < 0 || r.top > vh || r.right < 0 || r.left > vw) continue;
+    if (r.width >= vw - 2 && r.height >= vh - 2) continue;
+    if (isRavalElement(el)) continue;
+    if (typeof el.checkVisibility === 'function' && !el.checkVisibility({ visibilityProperty: true })) continue;
+    h.push({ at: r.top, el, rect: r, leading: true }, { at: r.bottom, el, rect: r, leading: false });
+    v.push({ at: r.left, el, rect: r, leading: true }, { at: r.right, el, rect: r, leading: false });
   }
-
-  if (axis === 'horizontal') {
-    for (let x = RULER_SIZE; x < vw; x += SNAP_SAMPLE_STEP) {
-      for (const dy of band) addAt(x, rawPosition + dy);
-    }
-    addAt(vw - 1, rawPosition);
-  } else {
-    for (let y = RULER_SIZE; y < vh; y += SNAP_SAMPLE_STEP) {
-      for (const dx of band) addAt(rawPosition + dx, y);
-    }
-    addAt(rawPosition, vh - 1);
-  }
-
-  return candidates;
+  const byPosition = (a: Edge, b: Edge): number => a.at - b.at;
+  h.sort(byPosition);
+  v.sort(byPosition);
+  return { t: performance.now(), sx: window.scrollX, sy: window.scrollY, vw, vh, h, v };
 }
 
-function withPageHitTesting<T>(fn: () => T): T {
-  const root = document.getElementById('raval-overlay-root');
-  const canvas = document.getElementById('raval-canvas-overlay');
-  const persist = document.getElementById('raval-persist-canvas');
-  const panel = document.getElementById('raval-panel');
-  const labels = document.getElementById('raval-labels');
-  const persistLabels = document.getElementById('raval-persist-labels');
-  const annotate = document.getElementById('raval-annotate-root');
+/** Edges of the page as it stands, or null in the brief moment after a scroll before they are re-read. */
+function pageEdges(): EdgeCache | null {
+  const now = performance.now();
+  const c = edgeCache;
+  const current = c !== null && c.sx === window.scrollX && c.sy === window.scrollY
+    && c.vw === window.innerWidth && c.vh === window.innerHeight;
+  if (c && current && now - c.t < EDGE_CACHE_MS) return c;
+  if (c && now - c.t < EDGE_REBUILD_MIN_MS) return current ? c : null;
+  edgeCache = readEdges();
+  return edgeCache;
+}
 
-  const targets = [root, canvas, persist, panel, labels, persistLabels, annotate]
-    .filter(Boolean) as HTMLElement[];
-  const prev = targets.map((el) => el.style.pointerEvents);
-  for (const el of targets) el.style.pointerEvents = 'none';
+/** Is this edge actually on screen where the guide would meet it? One hit-test, just inside the element. */
+function edgeIsThere(edge: Edge, axis: 'horizontal' | 'vertical', mouseX: number, mouseY: number): boolean {
+  if (edge.el.matches(PASS_THROUGH)) return true;
+  const r = edge.rect;
+  const within = (v: number, lo: number, hi: number, max: number): number =>
+    Math.max(0, Math.min(max - 1, Math.max(lo + 1, Math.min(hi - 1, v))));
+  const inward = edge.leading ? 1 : -1;
+  const hit = (along: number): boolean => {
+    const x = axis === 'horizontal' ? within(along, r.left, r.right, window.innerWidth) : within(edge.at + inward, r.left, r.right, window.innerWidth);
+    const y = axis === 'horizontal' ? within(edge.at + inward, r.top, r.bottom, window.innerHeight) : within(along, r.top, r.bottom, window.innerHeight);
+    return document.elementsFromPoint(x, y).includes(edge.el);
+  };
+  // Nearest the pointer first, then the element's middle.
+  return axis === 'horizontal'
+    ? hit(mouseX) || hit((r.left + r.right) / 2)
+    : hit(mouseY) || hit((r.top + r.bottom) / 2);
+}
 
-  try {
-    return fn();
-  } finally {
-    targets.forEach((el, i) => { el.style.pointerEvents = prev[i] ?? ''; });
+/** First index whose edge is at or after `position`. */
+function lowerBound(edges: Edge[], position: number): number {
+  let lo = 0;
+  let hi = edges.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (edges[mid]!.at < position) lo = mid + 1;
+    else hi = mid;
   }
+  return lo;
 }
 
 /**
  * Nearest edge to snap a guide to, within SNAP_THRESHOLD. Looks at the page's
- * elements along the guide and at what has already been marked up: pinned
- * measurements and annotations take part too, so guides line up with them.
+ * elements and at what has already been marked up: pinned measurements and
+ * annotations take part too, so guides line up with them.
  */
 function snapPosition(
   axis: 'horizontal' | 'vertical',
@@ -404,20 +432,28 @@ function snapPosition(
     }
   };
 
-  const candidates = withPageHitTesting(() =>
-    collectSnapCandidates(axis, rawPosition, mouseX, mouseY),
-  );
-  for (const el of candidates) {
-    const r = el.getBoundingClientRect();
-    if (r.width < 1 || r.height < 1) continue;
-    if (r.width >= window.innerWidth - 2 && r.height >= window.innerHeight - 2) continue;
+  for (const r of [...getPinnedRects(), ...getAnnotationSnapRects()]) {
     if (axis === 'horizontal') { consider(r.top); consider(r.bottom); }
     else { consider(r.left); consider(r.right); }
   }
 
-  for (const r of [...getPinnedRects(), ...getAnnotationSnapRects()]) {
-    if (axis === 'horizontal') { consider(r.top); consider(r.bottom); }
-    else { consider(r.left); consider(r.right); }
+  const cache = pageEdges();
+  if (cache) {
+    const edges = axis === 'horizontal' ? cache.h : cache.v;
+    const near: Edge[] = [];
+    for (let i = lowerBound(edges, rawPosition - SNAP_THRESHOLD); i < edges.length; i++) {
+      const edge = edges[i]!;
+      if (edge.at > rawPosition + SNAP_THRESHOLD) break;
+      near.push(edge);
+    }
+    near.sort((a, b) => Math.abs(a.at - rawPosition) - Math.abs(b.at - rawPosition));
+    let confirms = 0;
+    for (const edge of near) {
+      // Nothing further away can beat what is already chosen.
+      if (Math.abs(edge.at - rawPosition) >= minDist || confirms >= MAX_CONFIRMS) break;
+      confirms++;
+      if (edgeIsThere(edge, axis, mouseX, mouseY)) { consider(edge.at); break; }
+    }
   }
 
   return best;
@@ -537,8 +573,6 @@ function onClick(e: MouseEvent): void {
   if (state.hoveredId) return;
   if (e.button !== 0) return;
 
-  if (e.clientX < RULER_SIZE || e.clientY < RULER_SIZE) return;
-
   // Place the guide where the preview is showing it, snap included.
   state.mouseX = e.clientX;
   state.mouseY = e.clientY;
@@ -633,6 +667,46 @@ function onContextMenu(e: MouseEvent): void {
   }
 }
 
+// ─── Distance between guides ──────────────────────────────────────────────────
+// With the pointer between two parallel guides, the gap between them is
+// measured along the pointer. On a guide (hovered or being moved) it is that
+// guide's distance to its neighbour on each side.
+
+/** Closest guide of an axis on each side of a page position. */
+function neighbours(axis: Guide['axis'], position: number, skipId?: string): { before: Guide | null; after: Guide | null } {
+  let before: Guide | null = null;
+  let after: Guide | null = null;
+  for (const g of state.guides) {
+    if (g.axis !== axis || g.id === skipId) continue;
+    if (g.position < position && (!before || g.position > before.position)) before = g;
+    if (g.position > position && (!after || g.position < after.position)) after = g;
+  }
+  return { before, after };
+}
+
+/** One measured gap along `axis` guides, from page position `from` to `to`, drawn through the pointer. */
+function drawGap(ctx: CanvasRenderingContext2D, axis: Guide['axis'], from: number, to: number, x: number, y: number): void {
+  const label = formatDistance(Math.abs(to - from));
+  // Horizontal guides are a vertical distance apart, and the other way round.
+  if (axis === 'horizontal') drawGuideGap(ctx, x, toViewY(from), x, toViewY(to), label, y);
+  else drawGuideGap(ctx, toViewX(from), y, toViewX(to), y, label);
+}
+
+function drawGuideGaps(ctx: CanvasRenderingContext2D, anchor: Guide | undefined, at: Preview | null): void {
+  if (anchor) {
+    const { before, after } = neighbours(anchor.axis, anchor.position, anchor.id);
+    if (before) drawGap(ctx, anchor.axis, before.position, anchor.position, state.mouseX, state.mouseY);
+    if (after) drawGap(ctx, anchor.axis, anchor.position, after.position, state.mouseX, state.mouseY);
+    return;
+  }
+  if (!at) return;
+  for (const axis of ['horizontal', 'vertical'] as const) {
+    const pointer = toGuidePagePos(axis, axis === 'horizontal' ? at.y : at.x);
+    const { before, after } = neighbours(axis, pointer);
+    if (before && after) drawGap(ctx, axis, before.position, after.position, at.x, at.y);
+  }
+}
+
 // ─── Interactive render (live crosshair only — placed guides are on persist) ─
 
 function scheduleFrame(): void {
@@ -670,6 +744,11 @@ function render(): void {
     // Hidden: start fresh next time instead of gliding in from where it last was.
     previewEaseX.reset();
     previewEaseY.reset();
+  }
+
+  if (state.showGaps && state.visible && !quiet) {
+    const anchor = dragged ?? state.guides.find((g) => g.id === state.hoveredId);
+    drawGuideGaps(ctx, anchor, at);
   }
 
   if (overGuide && !moving && !quiet) {
