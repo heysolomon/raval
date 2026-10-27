@@ -199,8 +199,10 @@ The panel opens next to what you clicked, with the tag and size at the top and o
 
 Turn on **Show spacing** in the options card, or press \`B\`, and the element you click is drawn with its spacing on it:
 
-- **Padding** in green and **margin** in amber, each side labelled in px.
-- For a flex or grid container, the **gaps between its children** in purple.
+- **Padding** as a light tint and **margin** as diagonal lines, each side labelled in px.
+- For a flex or grid container, the **gaps between its children** as a stronger tint.
+
+All three are drawn in the colour you picked for Raval's marks.
 
 Clicking a word shows the spacing of the element that holds it. The setting is off by default and is remembered.
 

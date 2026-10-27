@@ -421,44 +421,52 @@ function Segmented({ value, onChange }: { value: Format; onChange: (f: Format) =
   );
 }
 
-/** Fixed, not the mark colour: the three kinds of space have to stay tellable apart. */
-const PADDING_RGB = '22, 163, 74';
-const MARGIN_RGB = '217, 119, 6';
-const GAP_RGB = '124, 58, 237';
+// All in the accent, told apart by fill: padding a light tint, margin a diagonal hatch, gaps a stronger tint.
+const PADDING_ALPHA = 0.18;
+const GAP_ALPHA = 0.32;
+const MARGIN_ALPHA = 0.06;
+const HATCH_ALPHA = 0.45;
+const HATCH_ID = 'raval-demo-margin-hatch';
 
-function BandLabel({ x, y, value, rgb }: { x: number; y: number; value: number; rgb: string }) {
+function BandLabel({ x, y, value, color }: { x: number; y: number; value: number; color: string }) {
   const text = String(Math.round(value * 100) / 100);
   const w = text.length * 6.2 + 8;
   return (
     <g>
       <rect x={Math.round(x - w / 2)} y={Math.round(y - 7)} width={w} height="14" rx="4" fill="rgba(255,255,255,0.94)" />
-      <text x={Math.round(x)} y={Math.round(y) + 3.5} textAnchor="middle" fill={`rgb(${rgb})`} fontFamily={UI.mono} fontSize="10" fontWeight="500">{text}</text>
+      <text x={Math.round(x)} y={Math.round(y) + 3.5} textAnchor="middle" fill={color} fontFamily={UI.mono} fontSize="10" fontWeight="500">{text}</text>
     </g>
   );
 }
 
 /** Padding, margin and child gaps of the clicked element, drawn on it the way browser dev tools do. */
 function SpacingBands({ s }: { s: Spacing }) {
+  const { color } = useDemo();
   const box = (e: Edges): string => `M${e.left} ${e.top}H${e.right}V${e.bottom}H${e.left}Z`;
-  const ring = (outer: Edges, inner: Edges, values: Spacing['marginValues'], rgb: string): ReactNode => {
+  const ring = (outer: Edges, inner: Edges, values: Spacing['marginValues'], fills: string[]): ReactNode => {
     const cx = (outer.left + outer.right) / 2;
     const cy = (outer.top + outer.bottom) / 2;
     return (
       <g>
-        <path d={box(outer) + box(inner)} fillRule="evenodd" fill={`rgba(${rgb}, 0.22)`} />
-        {values.top >= 1 && <BandLabel x={cx} y={(outer.top + inner.top) / 2} value={values.top} rgb={rgb} />}
-        {values.bottom >= 1 && <BandLabel x={cx} y={(outer.bottom + inner.bottom) / 2} value={values.bottom} rgb={rgb} />}
-        {values.left >= 1 && <BandLabel x={(outer.left + inner.left) / 2} y={cy} value={values.left} rgb={rgb} />}
-        {values.right >= 1 && <BandLabel x={(outer.right + inner.right) / 2} y={cy} value={values.right} rgb={rgb} />}
+        {fills.map((fill) => <path key={fill} d={box(outer) + box(inner)} fillRule="evenodd" fill={fill} />)}
+        {values.top >= 1 && <BandLabel x={cx} y={(outer.top + inner.top) / 2} value={values.top} color={color} />}
+        {values.bottom >= 1 && <BandLabel x={cx} y={(outer.bottom + inner.bottom) / 2} value={values.bottom} color={color} />}
+        {values.left >= 1 && <BandLabel x={(outer.left + inner.left) / 2} y={cy} value={values.left} color={color} />}
+        {values.right >= 1 && <BandLabel x={(outer.right + inner.right) / 2} y={cy} value={values.right} color={color} />}
       </g>
     );
   };
   return (
     <svg data-demo-ui="true" aria-hidden="true" style={{ position: 'fixed', left: 0, top: 0, width: '100vw', height: '100vh', overflow: 'visible', pointerEvents: 'none', zIndex: 8898 }}>
-      {s.gaps.map((g, i) => <rect key={i} x={g.x} y={g.y} width={g.w} height={g.h} fill={`rgba(${GAP_RGB}, 0.22)`} />)}
-      {ring(s.margin, s.border, s.marginValues, MARGIN_RGB)}
-      {ring(s.padding, s.content, s.paddingValues, PADDING_RGB)}
-      {s.gaps.map((g, i) => (g.labelled ? <BandLabel key={i} x={g.x + g.w / 2} y={g.y + g.h / 2} value={g.value} rgb={GAP_RGB} /> : null))}
+      <defs>
+        <pattern id={HATCH_ID} patternUnits="userSpaceOnUse" width="6" height="6" patternTransform="rotate(45)">
+          <line x1="0" y1="0" x2="0" y2="6" stroke={tint(color, HATCH_ALPHA)} strokeWidth="1" />
+        </pattern>
+      </defs>
+      {s.gaps.map((g, i) => <rect key={i} x={g.x} y={g.y} width={g.w} height={g.h} fill={tint(color, GAP_ALPHA)} />)}
+      {ring(s.margin, s.border, s.marginValues, [tint(color, MARGIN_ALPHA), `url(#${HATCH_ID})`])}
+      {ring(s.padding, s.content, s.paddingValues, [tint(color, PADDING_ALPHA)])}
+      {s.gaps.map((g, i) => (g.labelled ? <BandLabel key={i} x={g.x + g.w / 2} y={g.y + g.h / 2} value={g.value} color={color} /> : null))}
     </svg>
   );
 }

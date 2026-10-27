@@ -3,10 +3,14 @@
  * box, drawn the way browser dev tools draw it: padding inside the border,
  * margin outside it, and for a flex or grid container the gaps between its
  * children. Each band carries its size in px.
+ *
+ * All three are drawn in the mark colour and told apart by how they are filled:
+ * padding a light tint, margin a diagonal hatch, gaps a stronger tint.
  */
 import type { BoxModelValues, Rect } from '@raval/shared';
 import { getBoxModel } from './detector';
 import { domRectToRect } from './utils';
+import { getMarkColor, markRgba } from './mark-color';
 
 interface Band { x: number; y: number; w: number; h: number; value: number; labelled: boolean }
 
@@ -21,10 +25,41 @@ export interface Spacing {
   gaps: Band[];
 }
 
-/** Fixed, not the mark colour: the three kinds of space have to stay tellable apart. */
-const PADDING_RGB = '22, 163, 74';
-const MARGIN_RGB = '217, 119, 6';
-const GAP_RGB = '124, 58, 237';
+const PADDING_ALPHA = 0.18;
+const GAP_ALPHA = 0.32;
+/** Margin: a faint tint under diagonal lines, so it reads as space outside the element. */
+const MARGIN_ALPHA = 0.06;
+const HATCH_ALPHA = 0.45;
+const HATCH_GAP = 6;
+
+let hatch: { key: string; pattern: CanvasPattern } | null = null;
+
+/** Diagonal lines in the mark colour, drawn at device resolution so they stay crisp. */
+function hatchPattern(ctx: CanvasRenderingContext2D): CanvasPattern | null {
+  const dpr = window.devicePixelRatio || 1;
+  const key = `${getMarkColor()}@${dpr}`;
+  if (hatch?.key === key) return hatch.pattern;
+  const size = Math.round(HATCH_GAP * dpr);
+  const tile = document.createElement('canvas');
+  tile.width = size;
+  tile.height = size;
+  const t = tile.getContext('2d');
+  if (!t) return null;
+  t.strokeStyle = markRgba(HATCH_ALPHA);
+  t.lineWidth = dpr;
+  t.beginPath();
+  // The main stroke and the two corner pieces that make it continue across tiles.
+  t.moveTo(0, size); t.lineTo(size, 0);
+  t.moveTo(-1, 1); t.lineTo(1, -1);
+  t.moveTo(size - 1, size + 1); t.lineTo(size + 1, size - 1);
+  t.stroke();
+  const pattern = ctx.createPattern(tile, 'repeat');
+  if (!pattern) return null;
+  // The canvas is already scaled to CSS pixels; undo that for the tile, which is in device pixels.
+  pattern.setTransform(new DOMMatrix().scaleSelf(1 / dpr, 1 / dpr));
+  hatch = { key, pattern };
+  return pattern;
+}
 
 /** Beyond this a container's children are not compared pair by pair. */
 const MAX_CHILDREN = 60;
@@ -113,7 +148,7 @@ export function readSpacing(el: Element): Spacing {
   };
 }
 
-function label(ctx: CanvasRenderingContext2D, cx: number, cy: number, value: number, rgb: string): void {
+function label(ctx: CanvasRenderingContext2D, cx: number, cy: number, value: number): void {
   const text = String(Math.round(value * 100) / 100);
   const w = Math.ceil(ctx.measureText(text).width) + 8;
   const h = 14;
@@ -121,24 +156,33 @@ function label(ctx: CanvasRenderingContext2D, cx: number, cy: number, value: num
   ctx.roundRect(Math.round(cx - w / 2), Math.round(cy - h / 2), w, h, 4);
   ctx.fillStyle = 'rgba(255, 255, 255, 0.94)';
   ctx.fill();
-  ctx.fillStyle = `rgb(${rgb})`;
+  ctx.fillStyle = getMarkColor();
   ctx.fillText(text, Math.round(cx), Math.round(cy) + 0.5);
 }
 
 /** Tint the space between two nested boxes and write each side's size on it. */
-function ring(ctx: CanvasRenderingContext2D, outer: Rect, inner: Rect, values: BoxModelValues, rgb: string): void {
+function ring(
+  ctx: CanvasRenderingContext2D,
+  outer: Rect,
+  inner: Rect,
+  values: BoxModelValues,
+  fills: (string | CanvasPattern | null)[],
+): void {
   ctx.beginPath();
   ctx.rect(outer.left, outer.top, outer.width, outer.height);
   ctx.rect(inner.left, inner.top, inner.width, inner.height);
-  ctx.fillStyle = `rgba(${rgb}, 0.22)`;
-  ctx.fill('evenodd');
+  for (const fill of fills) {
+    if (!fill) continue;
+    ctx.fillStyle = fill;
+    ctx.fill('evenodd');
+  }
 
   const cx = (outer.left + outer.right) / 2;
   const cy = (outer.top + outer.bottom) / 2;
-  if (values.top >= 1) label(ctx, cx, (outer.top + inner.top) / 2, values.top, rgb);
-  if (values.bottom >= 1) label(ctx, cx, (outer.bottom + inner.bottom) / 2, values.bottom, rgb);
-  if (values.left >= 1) label(ctx, (outer.left + inner.left) / 2, cy, values.left, rgb);
-  if (values.right >= 1) label(ctx, (outer.right + inner.right) / 2, cy, values.right, rgb);
+  if (values.top >= 1) label(ctx, cx, (outer.top + inner.top) / 2, values.top);
+  if (values.bottom >= 1) label(ctx, cx, (outer.bottom + inner.bottom) / 2, values.bottom);
+  if (values.left >= 1) label(ctx, (outer.left + inner.left) / 2, cy, values.left);
+  if (values.right >= 1) label(ctx, (outer.right + inner.right) / 2, cy, values.right);
 }
 
 export function drawSpacing(ctx: CanvasRenderingContext2D, s: Spacing, opacity = 1): void {
@@ -149,14 +193,14 @@ export function drawSpacing(ctx: CanvasRenderingContext2D, s: Spacing, opacity =
   ctx.textBaseline = 'middle';
 
   for (const band of s.gaps) {
-    ctx.fillStyle = `rgba(${GAP_RGB}, 0.22)`;
+    ctx.fillStyle = markRgba(GAP_ALPHA);
     ctx.fillRect(band.x, band.y, band.w, band.h);
   }
-  ring(ctx, s.margin, s.border, s.marginValues, MARGIN_RGB);
-  ring(ctx, s.padding, s.content, s.paddingValues, PADDING_RGB);
+  ring(ctx, s.margin, s.border, s.marginValues, [markRgba(MARGIN_ALPHA), hatchPattern(ctx)]);
+  ring(ctx, s.padding, s.content, s.paddingValues, [markRgba(PADDING_ALPHA)]);
   // Gap sizes last, so a neighbouring band never covers one.
   for (const band of s.gaps) {
-    if (band.labelled) label(ctx, band.x + band.w / 2, band.y + band.h / 2, band.value, GAP_RGB);
+    if (band.labelled) label(ctx, band.x + band.w / 2, band.y + band.h / 2, band.value);
   }
   ctx.restore();
 }

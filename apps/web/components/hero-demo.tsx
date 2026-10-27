@@ -72,14 +72,12 @@ export const HERO_TUNING = {
     saved: 2.2,
   },
   /**
-   * Neue Plak's letters sit above the middle of its line box, so a label centred by the browser
-   * looks too high in a tab. `tab` moves 7.5px tab text down to where its capitals are centred.
-   * It is applied as a transform: an offset in layout (`top`) snaps to whole pixels and can only
-   * land a little high or a little low. Capitals-only labels (HEX, S, XL) have no descenders to
-   * balance, so `caps` is smaller. Flex centres a glyph by its advance width, not its ink, so the
-   * measure badges get their own offsets: `badgeY` for all three, `badgeBX` for the B.
+   * Small labels are centred on their capitals by FineText. These are optical corrections on top,
+   * in stage pixels, positive is down: `tab` for tab labels, `caps` for capitals-only ones (HEX,
+   * S, XL), `badgeY` for the measure badges' letters. Flex centres a glyph by its advance width,
+   * not its ink, so `badgeBX` moves the B sideways.
    */
-  nudge: { tab: 1.55, caps: 1.2, badgeY: 0.98, badgeBX: -0.26 },
+  nudge: { tab: 0, caps: 0, badgeY: 0, badgeBX: -0.26 },
   /** The note: where it is written, how it leans when fresh, and how far the handle turns it. */
   note: { x: 508, y: 352, size: 16, tilt: -1.5, turned: -9 },
   /** The pen stroke under the second card's price. `wave` is how far it wanders from straight. */
@@ -112,12 +110,42 @@ export function mergeTuning(patch: HeroTuningPatch | undefined): HeroTuning {
 
 const Tune = createContext<HeroTuning>(HERO_TUNING);
 
+/** Small text is laid out this many times larger and scaled down. */
+const FINE = 4;
+/**
+ * How far Neue Plak's capitals sit above the middle of a line-height:1 box, in em: its ascent
+ * is 0.77em, descent 0.23em and capitals 0.706em tall, so their middle is at
+ * (0.77 − 0.23) / 2 − 0.706 / 2 = −0.083em.
+ */
+const CAP_RISE = 0.083;
+
+/**
+ * A short label centred on its capitals in whatever box it sits in. At 7.5px the browser rounds
+ * the font's ascent and descent to whole pixels, so plain text lands up to a pixel off, and by a
+ * different amount at each zoom level. Laid out at FINE× its size and scaled down, that rounding
+ * shrinks to a fraction of a pixel. `dy` and `dx` are optical corrections in stage pixels.
+ */
+function FineText({ size, dy = 0, dx = 0, children }: { size: number; dy?: number; dx?: number; children: ReactNode }) {
+  return (
+    // A zero-size anchor, so the flex box around it centres a point, whatever the text measures.
+    <span style={{ position: 'relative', display: 'inline-block', width: 0, height: 0, flexShrink: 0 }}>
+      <span style={{
+        position: 'absolute', left: 0, top: 0, fontSize: size * FINE, lineHeight: 1, whiteSpace: 'nowrap',
+        transformOrigin: '0 0', transform: `translate(${dx}px, ${CAP_RISE * size + dy}px) scale(${1 / FINE}) translate(-50%, -50%)`,
+      }}>
+        {children}
+      </span>
+    </span>
+  );
+}
+
 // ─── The mock page, in page coordinates ───────────────────────────────────────
 
 interface Box { x: number; y: number; w: number; h: number }
 
 const HEADING: Box = { x: 56, y: 96, w: 196, h: 34 };
-const WORD: Box = { x: 201, y: 143, w: 37, h: 18 };
+/** Where "team" lands in its sentence (measured): its glyph box, as a text selection covers it. */
+const WORD: Box = { x: 202.5, y: 145, w: 28.4, h: 13 };
 const CARD_A: Box = { x: 56, y: 200, w: 140, h: 112 };
 const CARD_B: Box = { x: 260, y: 200, w: 140, h: 112 };
 const CARD_C: Box = { x: 444, y: 96, w: 140, h: 216 };
@@ -306,7 +334,7 @@ function Highlight({ box, selected, radius = 3, hollow = false }: { box: Box; se
 
 function Badge({ box, letter }: { box: Box; letter: string }) {
   const { nudge } = useContext(Tune);
-  const [dx, dy] = [letter === 'B' ? nudge.badgeBX : 0, nudge.badgeY];
+  const dx = letter === 'B' ? nudge.badgeBX : 0;
   return (
     <motion.div
       initial={{ scale: 0.6, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.6, opacity: 0 }} transition={{ duration: 0.16, ease: 'easeOut' }}
@@ -314,10 +342,10 @@ function Badge({ box, letter }: { box: Box; letter: string }) {
         position: 'absolute', left: box.x - 7, top: box.y - 7, width: 14, height: 14, borderRadius: '50%',
         background: ACCENT, border: '1.5px solid #fff', boxSizing: 'border-box', color: '#fff',
         display: 'flex', alignItems: 'center', justifyContent: 'center',
-        fontFamily: SANS, fontSize: 8.5, fontWeight: 600, lineHeight: 1,
+        fontFamily: SANS, fontWeight: 600,
       }}
     >
-      <span style={{ display: 'inline-block', transform: `translate(${dx}px, ${dy}px)` }}>{letter}</span>
+      <FineText size={8.5} dx={dx} dy={nudge.badgeY}>{letter}</FineText>
     </motion.div>
   );
 }
@@ -399,8 +427,8 @@ function Toolbar({ mode, capturing }: { mode: Mode; capturing: boolean }) {
 }
 
 /**
- * A row of tabs with the pill that slides to the active one. Labels are nudged down to where
- * their capitals are centred (see HERO_TUNING.nudge): `caps` is for labels made only of capitals.
+ * A row of tabs with the pill that slides to the active one. Labels are centred on their capitals
+ * (FineText); `caps` picks the correction for labels made only of capitals (HERO_TUNING.nudge).
  */
 function TabRow({ items, active, height, caps = false }: { items: readonly string[]; active: number; height: number; caps?: boolean }) {
   const { nudge } = useContext(Tune);
@@ -410,7 +438,7 @@ function TabRow({ items, active, height, caps = false }: { items: readonly strin
       <div style={{ position: 'absolute', top: 1.5, bottom: 1.5, width: `calc((100% - 3px) / ${n})`, left: `calc(1.5px + ${active} * ((100% - 3px) / ${n}))`, background: '#fff', borderRadius: 4, boxShadow: '0 1px 2px rgba(0,0,0,0.08)', transition: 'left 0.22s cubic-bezier(0.4, 0, 0.2, 1)' }} />
       {items.map((label, i) => (
         <span key={label} style={{ position: 'relative', zIndex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 7.5, fontWeight: 500, lineHeight: 1, color: i === active ? '#000' : '#737373', transition: 'color 0.22s ease' }}>
-          <span style={{ display: 'inline-block', transform: `translateY(${caps ? nudge.caps : nudge.tab}px)` }}>{label}</span>
+          <FineText size={7.5} dy={caps ? nudge.caps : nudge.tab}>{label}</FineText>
         </span>
       ))}
     </div>
@@ -431,9 +459,10 @@ function TrayRows({ show, children }: { show: boolean; children: ReactNode }) {
  * the settings of the tool that is on (note size and font, arrow ends, pen width).
  */
 function Tray({ tool, colour, arrowStart }: { tool: Tool; colour: string; arrowStart: ArrowEnd }) {
-  const TAB_NUDGE = useContext(Tune).nudge.tab;
+  const { nudge } = useContext(Tune);
   const sub: CSSProperties = { display: 'flex', alignItems: 'center', marginTop: SUB_GAP };
-  const endLabel: CSSProperties = { width: END_LABEL_W, flexShrink: 0, fontSize: 7.5, lineHeight: 1, color: '#737373' };
+  // Left-aligned rather than centred: the anchor sits half the word's width in from the left.
+  const endLabel: CSSProperties = { width: END_LABEL_W, flexShrink: 0, alignSelf: 'stretch', display: 'flex', alignItems: 'center', color: '#737373' };
   return (
     <motion.div
       initial={{ opacity: 0, y: TRAY.y - 4, scale: 0.98 }} animate={{ opacity: 1, y: TRAY.y, scale: 1 }} exit={{ opacity: 0, y: TRAY.y - 4, scale: 0.98, transition: { duration: 0.12 } }}
@@ -459,11 +488,11 @@ function Tray({ tool, colour, arrowStart }: { tool: Tool; colour: string; arrowS
       </TrayRows>
       <TrayRows show={tool === 'arrow'}>
         <div style={sub}>
-          <span style={endLabel}><span style={{ display: 'inline-block', transform: `translateY(${TAB_NUDGE}px)` }}>Start</span></span>
+          <span style={endLabel}><span style={{ marginLeft: 9 }}><FineText size={7.5} dy={nudge.tab}>Start</FineText></span></span>
           <TabRow items={ARROW_ENDS} active={ARROW_ENDS.indexOf(arrowStart)} height={SUB_ROW} />
         </div>
         <div style={sub}>
-          <span style={endLabel}><span style={{ display: 'inline-block', transform: `translateY(${TAB_NUDGE}px)` }}>End</span></span>
+          <span style={endLabel}><span style={{ marginLeft: 7 }}><FineText size={7.5} dy={nudge.tab}>End</FineText></span></span>
           <TabRow items={ARROW_ENDS} active={1} height={SUB_ROW} />
         </div>
       </TrayRows>
@@ -474,7 +503,7 @@ function Tray({ tool, colour, arrowStart }: { tool: Tool; colour: string; arrowS
   );
 }
 
-/** Padding of a clicked card, drawn on it as Inspect's spacing setting does: a green band with each side's size. */
+/** Padding of a clicked card, drawn on it as Inspect's spacing setting does: a light accent band with each side's size. */
 function PaddingBands({ box, pad }: { box: Box; pad: number }) {
   // Inside the 1px border.
   const o = { l: box.x + 1, t: box.y + 1, r: box.x + box.w - 1, b: box.y + box.h - 1 };
@@ -485,7 +514,7 @@ function PaddingBands({ box, pad }: { box: Box; pad: number }) {
   const label = (x: number, y: number): ReactNode => (
     <g>
       <rect x={x - 7} y={y - 5} width="14" height="10" rx="3" fill="rgba(255,255,255,0.94)" />
-      <text x={x} y={y + 2.7} textAnchor="middle" fill="rgb(22, 163, 74)" fontFamily={MONO} fontSize="7.5" fontWeight="500">{pad}</text>
+      <text x={x} y={y + 2.7} textAnchor="middle" fill={ACCENT} fontFamily={MONO} fontSize="7.5" fontWeight="500">{pad}</text>
     </g>
   );
   return (
@@ -493,7 +522,7 @@ function PaddingBands({ box, pad }: { box: Box; pad: number }) {
       width={W} height={H} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.15 }}
       style={{ position: 'absolute', left: 0, top: 0, overflow: 'visible' }}
     >
-      <path d={rect(o) + rect(i)} fillRule="evenodd" fill="rgba(22, 163, 74, 0.22)" />
+      <path d={rect(o) + rect(i)} fillRule="evenodd" fill="rgba(255, 69, 0, 0.18)" />
       {label(cx, (o.t + i.t) / 2)}{label(cx, (o.b + i.b) / 2)}{label((o.l + i.l) / 2, cy)}{label((o.r + i.r) / 2, cy)}
     </motion.svg>
   );
@@ -732,12 +761,8 @@ export function HeroDemo({ scenes = ALL_SCENES, tuning, paused = false }: { scen
         await move(WORD.x + 16, WORD.y + 9, 0.45, 'text');
         patch({ hover: WORD });
         await wait(230);
-        patch({ wordHover: true });
-        await wait(120);
-        patch({ hover: null });
-        await wait(300);
-        await click();
-        patch({ wordSelected: true, panel: 'type' });
+        // Landed: the click comes at once, and the word takes the accent as the panel opens.
+        setF((prev) => ({ ...prev, clicks: prev.clicks + 1, hover: null, wordHover: true, wordSelected: true, panel: 'type' }));
         await wait(T.hold.typography * 1000);
         // Open another section: the first closes, so the panel stays short.
         await move(COLOURS_HEADER.x, COLOURS_HEADER.y, 0.45, 'pointer');
@@ -1006,17 +1031,18 @@ export function HeroDemo({ scenes = ALL_SCENES, tuning, paused = false }: { scen
             Simple pricing
           </div>
           <div style={{ position: 'absolute', left: 56, top: 143, width: 320, fontSize: 12.5, lineHeight: '18px', color: 'var(--hd-ink-2)', whiteSpace: 'nowrap' }}>
+            {/* "team" stays in the sentence's own flow, so the spaces either side of it are ordinary
+                spaces and its highlight covers just the word, as a text selection would. WORD is
+                where it lands. */}
             Start free, then pay as your{' '}
-            <span style={{
-              // Positioned so its box matches WORD, whatever the font metrics do.
-              position: 'absolute', left: WORD.x - 56, top: 0, width: WORD.w, height: WORD.h, textAlign: 'center',
+            <span data-hero-word="" style={{
               background: f.wordHover || f.wordSelected ? ACCENT : 'transparent', color: f.wordHover || f.wordSelected ? '#fff' : 'inherit',
-              boxShadow: f.wordHover || f.wordSelected ? `0 0 0 1.5px ${ACCENT}` : 'none', borderRadius: 3,
+              boxShadow: f.wordHover || f.wordSelected ? `0 0 0 1.5px ${ACCENT}` : 'none', borderRadius: 2,
               transition: 'background 0.14s ease, color 0.14s ease, box-shadow 0.14s ease',
             }}>
               team
-            </span>
-            <span style={{ position: 'absolute', left: WORD.x - 56 + WORD.w + 4, top: 0 }}>grows.</span>
+            </span>{' '}
+            grows.
           </div>
           {[CARD_A, CARD_B].map((c, i) => (
             <div key={i} style={{ position: 'absolute', left: c.x, top: c.y, width: c.w, height: c.h, boxSizing: 'border-box', borderRadius: 8, border: '1px solid var(--hd-card-line)', background: 'var(--hd-card)', padding: 12 }}>
@@ -1144,7 +1170,7 @@ export function HeroDemo({ scenes = ALL_SCENES, tuning, paused = false }: { scen
                 <PanelSection title="Colours" open={f.panel === 'colours'} summary={<span style={{ width: 8, height: 8, borderRadius: '50%', background: textColour, border: `1px solid ${BORDER}` }} />}>
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', height: 16, background: 'rgba(0,0,0,0.05)', borderRadius: 5, padding: 1.5, boxSizing: 'border-box', marginBottom: 5, fontSize: 7.5, fontWeight: 500 }}>
                     {['HEX', 'RGB', 'HSL'].map((t, i) => (
-                      <span key={t} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 4, background: i === 0 ? '#fff' : 'transparent', boxShadow: i === 0 ? '0 1px 2px rgba(0,0,0,0.08)' : 'none', color: i === 0 ? '#000' : '#737373', lineHeight: 1 }}><span style={{ display: 'inline-block', transform: `translateY(${T.nudge.caps}px)` }}>{t}</span></span>
+                      <span key={t} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 4, background: i === 0 ? '#fff' : 'transparent', boxShadow: i === 0 ? '0 1px 2px rgba(0,0,0,0.08)' : 'none', color: i === 0 ? '#000' : '#737373', lineHeight: 1 }}><FineText size={7.5} dy={T.nudge.caps}>{t}</FineText></span>
                     ))}
                   </div>
                   <PanelRow label="Color" value={textColour} swatch={textColour} />

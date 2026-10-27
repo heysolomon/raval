@@ -12,10 +12,10 @@
     "lint": "eslint \"**/*.{ts,tsx}\""
   },
   "dependencies": {
-    "@raval/shared": "workspace:*",
     "@mdx-js/loader": "^3.1.0",
     "@mdx-js/react": "^3.1.0",
     "@next/mdx": "^15.3.0",
+    "@raval/shared": "workspace:*",
     "@vercel/analytics": "^1.5.0",
     "@vercel/og": "^0.6.4",
     "@vercel/speed-insights": "^1.2.0",
@@ -33,6 +33,7 @@
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "agentation": "^3.0.2",
+    "dialkit": "^2.0.2",
     "postcss": "^8.5.0",
     "tailwindcss": "^4.0.0",
     "typescript": "^5.7.0"
