@@ -119,7 +119,7 @@ importers:
         specifier: ^3.0.2
         version: 3.0.2(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
       dialkit:
-        specifier: 2.0.2
+        specifier: ^2.0.2
         version: 2.0.2(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
       postcss:
         specifier: ^8.5.0
