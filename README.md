@@ -11,6 +11,7 @@
 [![GitHub Stars](https://img.shields.io/github/stars/heysolomon/raval?style=flat-square&color=4A9EFF)](https://github.com/heysolomon/raval/stargazers)
 [![GitHub Issues](https://img.shields.io/github/issues/heysolomon/raval?style=flat-square)](https://github.com/heysolomon/raval/issues)
 [![Contributors](https://img.shields.io/github/contributors/heysolomon/raval?style=flat-square)](https://github.com/heysolomon/raval/graphs/contributors)
+[![XERJ Corpus Hub contributor](https://hub.xerj.org/contributors/heysolomon/badge.svg)](https://hub.xerj.org/contributors/heysolomon)
 
 </div>
 
