@@ -1,9 +1,9 @@
 import type { MetadataRoute } from 'next';
-import { DOC_NAV } from '../lib/docs';
 import { SITE_URL } from '../lib/site';
 
 type Entry = { path: string; changeFrequency: MetadataRoute.Sitemap[number]['changeFrequency']; priority: number };
 
+// `/welcome` is left out on purpose: it is for new installs, not search.
 const PAGES: Entry[] = [
   { path: '', changeFrequency: 'weekly', priority: 1 },
   { path: '/use-cases/frontend-qa', changeFrequency: 'monthly', priority: 0.85 },
@@ -14,16 +14,9 @@ const PAGES: Entry[] = [
   { path: '/privacy', changeFrequency: 'yearly', priority: 0.3 },
 ];
 
-// Every page in the docs sidebar. `/welcome` is left out on purpose: it is for new installs, not search.
-const DOCS: Entry[] = DOC_NAV.flatMap((group) => group.items).map(({ href }) => ({
-  path: href,
-  changeFrequency: href === '/docs' ? 'weekly' : 'monthly',
-  priority: href === '/docs' ? 0.9 : 0.8,
-}));
-
 export default function sitemap(): MetadataRoute.Sitemap {
   const lastModified = new Date();
-  return [...PAGES, ...DOCS].map(({ path, changeFrequency, priority }) => ({
+  return PAGES.map(({ path, changeFrequency, priority }) => ({
     url: `${SITE_URL}${path}`,
     lastModified,
     changeFrequency,

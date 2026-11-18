@@ -5,7 +5,6 @@ import { CHROME_STORE_URL, GITHUB_URL } from '../lib/site';
 import { formatCount, getChromeUsers, getGithubStars } from '../lib/stats';
 
 const NAV = [
-  { label: 'Docs',      href: '/docs' },
   { label: 'Use Cases', href: '/use-cases/frontend-qa' },
   { label: 'Changelog', href: '/changelog' },
 ] as const;

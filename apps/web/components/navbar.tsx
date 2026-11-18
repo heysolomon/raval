@@ -3,7 +3,6 @@ import Link from 'next/link';
 import { useDemo } from './demo-provider';
 
 const NAV = [
-  { label: 'Docs',         href: '/docs' },
   { label: 'Use Cases',    href: '/use-cases/frontend-qa' },
   { label: 'Alternatives', href: '/alternatives/page-ruler' },
   { label: 'Changelog',    href: '/changelog' },

@@ -18,6 +18,13 @@ const nextConfig = {
   transpilePackages: ['@raval/shared'],
   // ESLint is handled by the root workspace flat config (eslint.config.js)
   eslint: { ignoreDuringBuilds: true },
+  // The docs were retired; old links land on the homepage.
+  async redirects() {
+    return [
+      { source: '/docs', destination: '/', permanent: true },
+      { source: '/docs/:path*', destination: '/', permanent: true },
+    ];
+  },
   experimental: {
     mdxRs: false,
   },

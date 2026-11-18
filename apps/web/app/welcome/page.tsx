@@ -1,5 +1,4 @@
 import type { Metadata } from 'next';
-import Link from 'next/link';
 import { FeatureTiles } from '../../components/feature-tiles';
 import { Footer } from '../../components/footer';
 import { SiteHeader } from '../../components/site-header';
@@ -97,10 +96,9 @@ export default function WelcomePage() {
               <p>Guides are saved for each page. Measurements and annotations stay until you leave the page.</p>
               <p>It collects no data and runs entirely in your browser.</p>
               <p>
-                Next: the <Link href="/docs" className="lp-link">documentation</Link>, the full list of{' '}
-                <Link href="/docs/getting-started/shortcuts" className="lp-link">keyboard shortcuts</Link>, or{' '}
+                Something not working?{' '}
                 <a href={`${GITHUB_URL}/issues`} target="_blank" rel="noopener noreferrer" className="lp-link">
-                  report a problem<span className="sr-only"> (opens in new tab)</span>
+                  Report a problem<span className="sr-only"> (opens in new tab)</span>
                 </a>
                 .
               </p>

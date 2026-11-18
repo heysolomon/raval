@@ -1,7 +1,7 @@
 'use client';
 
 import { motion, useReducedMotion } from 'framer-motion';
-import { CHROME_STORE_URL } from '../lib/site';
+import { CHROME_STORE_URL, GITHUB_URL } from '../lib/site';
 
 export function InstallCTA() {
   const reduceMotion = useReducedMotion();
@@ -67,7 +67,9 @@ export function InstallCTA() {
             <span className="sr-only"> (opens in new tab)</span>
           </a>
           <a
-            href="/docs"
+            href={GITHUB_URL}
+            target="_blank"
+            rel="noopener noreferrer"
             className="flex items-center gap-2 px-7 py-3.5 rounded-xl font-medium text-sm w-full sm:w-auto justify-center site-link"
             style={{
               background: 'rgba(255,255,255,0.05)',
@@ -76,7 +78,8 @@ export function InstallCTA() {
               transition: 'background 0.2s ease, color 0.2s ease',
             }}
           >
-            Read the docs
+            View on GitHub
+            <span className="sr-only"> (opens in new tab)</span>
           </a>
         </div>
 

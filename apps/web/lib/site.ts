@@ -1,5 +1,6 @@
 export const SITE_URL = 'https://raval.solomonakuson.com';
 export const GITHUB_URL = 'https://github.com/heysolomon/raval';
+export const X_URL = 'https://x.com/heysolomon';
 export const CHROME_STORE_URL =
   'https://chromewebstore.google.com/detail/raval/anocimjcbeijomifkdcdkafdjphcdale';
 

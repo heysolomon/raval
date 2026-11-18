@@ -2,7 +2,6 @@ import { DemoTrigger } from '../components/demo-trigger';
 import { FeatureTiles } from '../components/feature-tiles';
 import { HeroDemo } from '../components/hero-demo';
 import type { Metadata } from 'next';
-import Link from 'next/link';
 import { Footer } from '../components/footer';
 import { SiteHeader } from '../components/site-header';
 import { CHROME_STORE_URL } from '../lib/site';
@@ -56,7 +55,7 @@ export default function HomePage() {
       <section className="lp-showcase" aria-label="How Raval works">
         <div className="lp-grid">
           <div className="lp-frame lp-frame-demo">
-            <HeroDemo />
+            <HeroDemo camera />
           </div>
         </div>
         <div className="lp-grid">
@@ -80,8 +79,7 @@ export default function HomePage() {
               switch between Inspect, Measure, Guides and Annotate, and <kbd>?</kbd> to see every shortcut.
             </p>
             <p>
-              It is MIT licensed, collects no data and runs entirely in your browser. Start with the{' '}
-              <Link href="/docs" className="lp-link">documentation</Link>.
+              It is MIT licensed, collects no data and runs entirely in your browser.
             </p>
           </div>
 
