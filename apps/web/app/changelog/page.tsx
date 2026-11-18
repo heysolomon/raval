@@ -25,6 +25,16 @@ const SECTION_ORDER: SectionName[] = ['Added', 'Changed', 'Fixed', 'Removed'];
 
 const entries: ChangelogEntry[] = [
   {
+    version: '0.4.1',
+    date: null,
+    preRelease: true,
+    sections: {
+      Changed: [
+        'Show spacing in Inspect draws in your chosen colour: padding as a light tint, gaps as a stronger one, and margin hatched, instead of fixed green, orange, and purple',
+      ],
+    },
+  },
+  {
     version: '0.4.0',
     date: null,
     preRelease: true,
